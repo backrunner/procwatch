@@ -25,6 +25,16 @@ pub async fn load_js_config(path: &Path) -> PromonResult<serde_json::Value> {
 }
 
 fn loader_path() -> PromonResult<PathBuf> {
+    if let Some(path) = std::env::var_os("PROMON_NODE_SUPPORT_LOADER").map(PathBuf::from) {
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(PromonError::Config(format!(
+            "PROMON_NODE_SUPPORT_LOADER points to missing file: {}",
+            path.display()
+        )));
+    }
+
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace = manifest_dir
         .parent()

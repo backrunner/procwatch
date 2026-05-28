@@ -403,6 +403,7 @@ dependencies = [
  "clap",
  "promon-config",
  "promon-core",
+ "promon-logging",
  "promon-node-support",
  "promon-platform",
  "promon-process",

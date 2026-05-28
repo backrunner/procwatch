@@ -39,6 +39,19 @@ fn sanitize_name(value: &str) -> String {
         .collect()
 }
 
+pub async fn tail_file(path: &PathBuf, lines: usize) -> std::io::Result<Vec<String>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let raw = fs::read_to_string(path).await?;
+    let mut values: Vec<String> = raw.lines().map(ToOwned::to_owned).collect();
+    if values.len() > lines {
+        values = values.split_off(values.len() - lines);
+    }
+    Ok(values)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

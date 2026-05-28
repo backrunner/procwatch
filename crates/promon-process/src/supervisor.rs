@@ -10,7 +10,7 @@ use tokio::fs::OpenOptions;
 use tokio::process::Command;
 use tokio::time::sleep;
 
-use crate::{load_processes, remove_process, upsert_process};
+use crate::{load_processes, remove_process, save_processes, upsert_process};
 
 pub async fn start_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
     if let Some(existing) = load_processes()
@@ -70,6 +70,60 @@ pub async fn start_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
     Ok(process)
 }
 
+pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
+    let mut restarts = 0_u32;
+    loop {
+        let command = resolve_runtime_command(app)?;
+        let log_paths = ensure_log_paths(app, logs_dir())
+            .await
+            .map_err(PromonError::Io)?;
+        let stdout = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_paths.out)
+            .await
+            .map_err(PromonError::Io)?
+            .into_std()
+            .await;
+        let stderr = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_paths.err)
+            .await
+            .map_err(PromonError::Io)?
+            .into_std()
+            .await;
+
+        let status = Command::new(&command.program)
+            .args(&command.args)
+            .current_dir(&command.cwd)
+            .envs(&command.env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .status()
+            .await
+            .map_err(PromonError::Io)?;
+
+        if status.success() || !app.restart.autorestart {
+            return Ok(());
+        }
+
+        restarts += 1;
+        if let Some(max) = app.restart.max_restarts {
+            if restarts > max {
+                return Err(PromonError::Process(format!(
+                    "app {} exceeded max_restarts={max}",
+                    app.name
+                )));
+            }
+        }
+
+        let delay = app.restart.restart_delay_ms.unwrap_or(1000);
+        sleep(Duration::from_millis(delay)).await;
+    }
+}
+
 pub async fn stop_app(name: &str) -> PromonResult<Option<ManagedProcess>> {
     let Some(process) = remove_process(name).await? else {
         return Ok(None);
@@ -88,6 +142,30 @@ pub async fn stop_app(name: &str) -> PromonResult<Option<ManagedProcess>> {
     }
 
     Ok(Some(process))
+}
+
+pub async fn stop_all() -> PromonResult<Vec<ManagedProcess>> {
+    let processes = load_processes().await?;
+    save_processes(&[]).await?;
+    for process in &processes {
+        if is_process_alive(process.pid) {
+            terminate_process(process.pid)
+                .await
+                .map_err(PromonError::Io)?;
+            sleep(Duration::from_millis(700)).await;
+            if is_process_alive(process.pid) {
+                force_kill_process(process.pid)
+                    .await
+                    .map_err(PromonError::Io)?;
+            }
+        }
+    }
+    Ok(processes)
+}
+
+pub async fn restart_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    let _ = stop_app(&app.name).await?;
+    start_app(app).await
 }
 
 pub async fn list_apps() -> PromonResult<Vec<ManagedProcess>> {
