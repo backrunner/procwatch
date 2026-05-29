@@ -740,7 +740,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-cli"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -760,7 +760,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-config"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "pumon-core",
  "pumon-node-support",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-core"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "serde",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-logging"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "pumon-core",
  "tokio",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-node-support"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "pumon-core",
  "pumon-platform",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-platform"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "directories",
  "thiserror",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "pumon-process"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 dependencies = [
  "chrono",
  "fs2",
