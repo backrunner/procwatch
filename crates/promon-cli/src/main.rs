@@ -13,8 +13,8 @@ use promon_core::{
     AppSpec, ExecMode, Instances, ManagedProcess, ProcessStatus, PromonConfig, ResolvedAppSpec,
 };
 use promon_logging::tail_file;
-use promon_node_support::validate_runtime;
-use promon_platform::{find_program, promon_home};
+use promon_node_support::{resolve_instances, resolve_runtime_command, validate_runtime};
+use promon_platform::{find_program, logs_dir, promon_home, state_dir};
 use promon_process::{
     list_apps, load_desired_apps, policy_restart_reason, reload_app, reload_app_supervised,
     restart_app, restart_app_supervised, run_app_foreground, save_desired_apps, scale_app,
@@ -63,7 +63,9 @@ enum Commands {
     Validate {
         config: Option<PathBuf>,
     },
-    Doctor,
+    Doctor {
+        config: Option<PathBuf>,
+    },
     Start {
         target: Option<PathBuf>,
         #[arg(long)]
@@ -117,7 +119,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Init { output } => init(output, cli.json).await,
         Commands::Validate { config } => validate(config, cli.json).await,
-        Commands::Doctor => doctor(cli.json).await,
+        Commands::Doctor { config } => doctor(config, cli.json).await,
         Commands::Start { target, wait } => start(target, wait, cli.json).await,
         Commands::Stop { name } => stop(name, cli.json).await,
         Commands::Restart { target } => restart(target, cli.json).await,
@@ -196,6 +198,62 @@ struct IpcResponse {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    promon_home: PathBuf,
+    platform: DoctorPlatformReport,
+    programs: Vec<DoctorProgramReport>,
+    directories: Vec<DoctorDirectoryReport>,
+    service: DoctorServiceReport,
+    config: DoctorConfigReport,
+    issues: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorPlatformReport {
+    os: &'static str,
+    arch: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorProgramReport {
+    name: &'static str,
+    path: Option<PathBuf>,
+    found: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorDirectoryReport {
+    name: &'static str,
+    path: PathBuf,
+    writable: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorServiceReport {
+    backend: &'static str,
+    path: Option<PathBuf>,
+    installed: bool,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorConfigReport {
+    path: Option<PathBuf>,
+    loaded: bool,
+    apps: Vec<DoctorAppReport>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorAppReport {
+    name: String,
+    ok: bool,
+    command: Option<String>,
+    issues: Vec<String>,
+}
+
 async fn init(output: PathBuf, json: bool) -> Result<()> {
     let sample = r#"{
   "apps": [
@@ -243,32 +301,299 @@ async fn validate(config: Option<PathBuf>, json: bool) -> Result<()> {
     Ok(())
 }
 
-async fn doctor(json: bool) -> Result<()> {
-    let node = find_program("node", None).map(|path| path.display().to_string());
-    let npm = find_program("npm", None).map(|path| path.display().to_string());
-    let pnpm = find_program("pnpm", None).map(|path| path.display().to_string());
-    let yarn = find_program("yarn", None).map(|path| path.display().to_string());
-    let bun = find_program("bun", None).map(|path| path.display().to_string());
-    let report = serde_json::json!({
-        "promon_home": promon_home(),
-        "node": node,
-        "npm": npm,
-        "pnpm": pnpm,
-        "yarn": yarn,
-        "bun": bun
-    });
-
+async fn doctor(config: Option<PathBuf>, json: bool) -> Result<()> {
+    let report = doctor_report(config).await;
     if json {
-        print_json(report)?;
+        print_json(serde_json::to_value(&report)?)?;
     } else {
-        println!("Promon home: {}", promon_home().display());
-        println!("node: {}", report["node"].as_str().unwrap_or("missing"));
-        println!("npm: {}", report["npm"].as_str().unwrap_or("missing"));
-        println!("pnpm: {}", report["pnpm"].as_str().unwrap_or("missing"));
-        println!("yarn: {}", report["yarn"].as_str().unwrap_or("missing"));
-        println!("bun: {}", report["bun"].as_str().unwrap_or("missing"));
+        print_doctor_report(&report);
     }
     Ok(())
+}
+
+async fn doctor_report(config: Option<PathBuf>) -> DoctorReport {
+    let home = promon_home();
+    let programs = doctor_programs();
+    let directories = vec![
+        doctor_directory_report("promon_home", home.clone()).await,
+        doctor_directory_report("state_dir", state_dir()).await,
+        doctor_directory_report("logs_dir", logs_dir()).await,
+    ];
+    let service = doctor_service_report().await;
+    let config = doctor_config_report(config).await;
+
+    let mut issues = Vec::new();
+    issues.extend(
+        programs
+            .iter()
+            .filter(|program| program.name == "node" && !program.found)
+            .map(|program| format!("missing program: {}", program.name)),
+    );
+    issues.extend(
+        directories
+            .iter()
+            .filter(|directory| !directory.writable)
+            .map(|directory| {
+                format!(
+                    "{} is not writable: {}",
+                    directory.name,
+                    directory
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| directory.path.display().to_string())
+                )
+            }),
+    );
+    if let Some(error) = &config.error {
+        issues.push(error.clone());
+    }
+    for app in &config.apps {
+        for issue in &app.issues {
+            issues.push(format!("{}: {issue}", app.name));
+        }
+    }
+
+    DoctorReport {
+        promon_home: home,
+        platform: DoctorPlatformReport {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+        },
+        programs,
+        directories,
+        service,
+        config,
+        issues,
+    }
+}
+
+fn doctor_programs() -> Vec<DoctorProgramReport> {
+    ["node", "npm", "pnpm", "yarn", "bun"]
+        .into_iter()
+        .map(|name| {
+            let path = find_program(name, None);
+            DoctorProgramReport {
+                name,
+                found: path.is_some(),
+                path,
+            }
+        })
+        .collect()
+}
+
+async fn doctor_directory_report(name: &'static str, path: PathBuf) -> DoctorDirectoryReport {
+    let writable = match ensure_directory_writable(&path).await {
+        Ok(()) => true,
+        Err(error) => {
+            return DoctorDirectoryReport {
+                name,
+                path,
+                writable: false,
+                error: Some(error.to_string()),
+            };
+        }
+    };
+    DoctorDirectoryReport {
+        name,
+        path,
+        writable,
+        error: None,
+    }
+}
+
+async fn ensure_directory_writable(path: &std::path::Path) -> Result<()> {
+    tokio::fs::create_dir_all(path).await?;
+    let probe = path.join(format!(
+        ".promon-doctor-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    tokio::fs::write(&probe, b"ok").await?;
+    tokio::fs::remove_file(&probe).await?;
+    Ok(())
+}
+
+async fn doctor_service_report() -> DoctorServiceReport {
+    match service_file_path() {
+        Ok(path) => DoctorServiceReport {
+            backend: service_backend_name(),
+            installed: path.exists(),
+            path: Some(path),
+            error: None,
+        },
+        Err(error) => DoctorServiceReport {
+            backend: service_backend_name(),
+            installed: false,
+            path: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+async fn doctor_config_report(config: Option<PathBuf>) -> DoctorConfigReport {
+    let explicit_config = config.is_some();
+    let resolved = match resolve_config(config) {
+        Ok(path) => path,
+        Err(error) => {
+            return DoctorConfigReport {
+                path: None,
+                loaded: false,
+                apps: Vec::new(),
+                error: explicit_config.then(|| format!("config not loaded: {error}")),
+            };
+        }
+    };
+
+    match load_config(&resolved).await {
+        Ok(apps) => {
+            let app_reports = apps.iter().map(doctor_app_report).collect();
+            DoctorConfigReport {
+                path: Some(resolved),
+                loaded: true,
+                apps: app_reports,
+                error: None,
+            }
+        }
+        Err(error) => DoctorConfigReport {
+            path: Some(resolved),
+            loaded: false,
+            apps: Vec::new(),
+            error: Some(format!("config load failed: {error}")),
+        },
+    }
+}
+
+fn doctor_app_report(app: &ResolvedAppSpec) -> DoctorAppReport {
+    let mut issues = Vec::new();
+    let command = match resolve_runtime_command(app) {
+        Ok(command) => Some(command.display_command()),
+        Err(error) => {
+            issues.push(error.to_string());
+            None
+        }
+    };
+    if let Err(error) = validate_app(app) {
+        if !issues.iter().any(|issue| issue == &error.to_string()) {
+            issues.push(error.to_string());
+        }
+    }
+    DoctorAppReport {
+        name: app.name.clone(),
+        ok: issues.is_empty(),
+        command,
+        issues,
+    }
+}
+
+fn print_doctor_report(report: &DoctorReport) {
+    println!("Promon home: {}", report.promon_home.display());
+    println!("Platform: {}/{}", report.platform.os, report.platform.arch);
+    println!();
+
+    println!("Programs:");
+    for program in &report.programs {
+        println!(
+            "- {}: {}",
+            program.name,
+            program
+                .path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "missing".to_string())
+        );
+    }
+    println!();
+
+    println!("Directories:");
+    for directory in &report.directories {
+        println!(
+            "- {}: {} ({})",
+            directory.name,
+            directory.path.display(),
+            if directory.writable {
+                "writable"
+            } else {
+                "not writable"
+            }
+        );
+        if let Some(error) = &directory.error {
+            println!("  {error}");
+        }
+    }
+    println!();
+
+    println!(
+        "Service backend: {}{}",
+        report.service.backend,
+        report
+            .service
+            .path
+            .as_ref()
+            .map(|path| format!(" ({})", path.display()))
+            .unwrap_or_default()
+    );
+    println!(
+        "Service installed: {}",
+        if report.service.installed {
+            "yes"
+        } else {
+            "no"
+        }
+    );
+    if let Some(error) = &report.service.error {
+        println!("Service error: {error}");
+    }
+    println!();
+
+    match (&report.config.path, report.config.loaded) {
+        (Some(path), true) => println!("Config: loaded {}", path.display()),
+        (Some(path), false) => println!("Config: failed {}", path.display()),
+        (None, _) => println!("Config: not loaded"),
+    }
+    if let Some(error) = &report.config.error {
+        println!("Config error: {error}");
+    }
+    for app in &report.config.apps {
+        println!("- {}: {}", app.name, if app.ok { "ok" } else { "issue" });
+        if let Some(command) = &app.command {
+            println!("  command: {command}");
+        }
+        for issue in &app.issues {
+            println!("  issue: {issue}");
+        }
+    }
+    println!();
+
+    if report.issues.is_empty() {
+        println!("Doctor result: ok");
+    } else {
+        println!("Doctor result: {} issue(s)", report.issues.len());
+        for issue in &report.issues {
+            println!("- {issue}");
+        }
+    }
+}
+
+fn service_backend_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "launchd"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "systemd-user"
+    }
+    #[cfg(windows)]
+    {
+        "windows-service-placeholder"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        "unsupported"
+    }
 }
 
 async fn start(target: Option<PathBuf>, wait: bool, json: bool) -> Result<()> {
@@ -894,6 +1219,14 @@ async fn run_tui(
                         model.message = tui_reload_selected(&model).await;
                         refresh_tui_model(&mut model).await?;
                     }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        model.message = tui_scale_selected(&mut model, 1).await;
+                        refresh_tui_model(&mut model).await?;
+                    }
+                    KeyCode::Char('-') => {
+                        model.message = tui_scale_selected(&mut model, -1).await;
+                        refresh_tui_model(&mut model).await?;
+                    }
                     KeyCode::Char('R') => {
                         model.message = "refreshed".to_string();
                         refresh_tui_model(&mut model).await?;
@@ -1023,7 +1356,7 @@ fn render_tui(frame: &mut Frame<'_>, model: &TuiModel) {
     render_detail_panel(frame, body[1], model);
     frame.render_widget(
         Paragraph::new(format!(
-            "Tab switch  Up/Down select  a start all  s start  x stop  r restart  l reload  R refresh  q quit  |  {}",
+            "Tab switch  Up/Down select  a start all  s start  x stop  r restart  l reload  +/- scale  R refresh  q quit  |  {}",
             model.message
         ))
         .wrap(Wrap { trim: true })
@@ -1202,15 +1535,45 @@ async fn tui_reload_selected(model: &TuiModel) -> String {
     }
 }
 
+async fn tui_scale_selected(model: &mut TuiModel, delta: i32) -> String {
+    let Some(index) = selected_tui_app_index(model) else {
+        return "scale requires a loaded config app".to_string();
+    };
+    let mut app = model.config_apps[index].clone();
+    if app.exec_mode != ExecMode::Cluster {
+        return format!("{} is not a cluster app", app.name);
+    }
+
+    let current = resolve_instances(&app.instances) as i32;
+    let next = (current + delta).clamp(1, u16::MAX as i32) as u16;
+    if next as i32 == current {
+        return format!("{} already has {current} worker(s)", app.name);
+    }
+    app.instances = Instances::Count(next);
+
+    match manage_scale_apps(vec![app.clone()]).await {
+        Ok(_) => {
+            model.config_apps[index] = app.clone();
+            format!("scaled {} to {next} worker(s)", app.name)
+        }
+        Err(error) => format!("scale failed: {error}"),
+    }
+}
+
 fn selected_tui_app(model: &TuiModel) -> Option<&ResolvedAppSpec> {
+    selected_tui_app_index(model).and_then(|index| model.config_apps.get(index))
+}
+
+fn selected_tui_app_index(model: &TuiModel) -> Option<usize> {
     match model.focus {
-        TuiFocus::ConfigApps => model.config_apps.get(model.selected_config_app),
+        TuiFocus::ConfigApps => (model.selected_config_app < model.config_apps.len())
+            .then_some(model.selected_config_app),
         TuiFocus::Processes => {
             let process = model.processes.get(model.selected_process)?;
             model
                 .config_apps
                 .iter()
-                .find(|app| app.name == process.name)
+                .position(|app| app.name == process.name)
         }
     }
 }
@@ -1260,6 +1623,22 @@ async fn manage_reload_apps(apps: Vec<ResolvedAppSpec>) -> Result<usize> {
     let mut count = 0;
     for app in &apps {
         reload_app(app).await?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+async fn manage_scale_apps(apps: Vec<ResolvedAppSpec>) -> Result<usize> {
+    for app in &apps {
+        validate_app(app)?;
+    }
+    if let Some(response) = try_daemon_request(IpcRequest::ScaleApps { apps: apps.clone() }).await?
+    {
+        return ipc_payload_count(response, "scaled");
+    }
+    let mut count = 0;
+    for app in &apps {
+        scale_app(app).await?;
         count += 1;
     }
     Ok(count)

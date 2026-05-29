@@ -4,7 +4,7 @@ Implemented MVP commands:
 
 - `promon init [output]`
 - `promon validate [config]`
-- `promon doctor`
+- `promon doctor [config]`
 - `promon start [config|script]`
 - `promon start --wait [config|script]`
 - `promon stop <name|all>`
@@ -26,4 +26,4 @@ For cluster apps, `scale` and `reload` use the cluster shim control channel when
 
 `promon watch` honors `watch.paths`, `watch.include`, `watch.ignore`, `ignore_watch`, `watch.debounce_ms`, and `watch.reload`. If no app has watch enabled, the explicit `watch` command watches all resolved apps.
 
-`promon tui [config]` opens an interactive terminal manager. It can list managed processes, tail logs, stop a selected process, and, when a config is loaded, start all apps or start/restart/reload the selected app.
+`promon tui [config]` opens an interactive terminal manager. It can list managed processes, tail logs, stop a selected process, and, when a config is loaded, start all apps or start/restart/reload/scale the selected app.
