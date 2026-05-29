@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+globset.workspace = true
 promon-config = { path = "../promon-config" }
 promon-core = { path = "../promon-core" }
 promon-logging = { path = "../promon-logging" }

@@ -30,6 +30,8 @@ pub fn normalize_config(config: PromonConfig, path: &Path) -> PromonResult<Vec<R
                 .unwrap_or_else(|| {
                     std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf())
                 });
+            let mut watch = app.watch;
+            watch.ignore.extend(app.ignore_watch);
 
             Ok(ResolvedAppSpec {
                 name: app.name,
@@ -45,7 +47,7 @@ pub fn normalize_config(config: PromonConfig, path: &Path) -> PromonResult<Vec<R
                 env: app.env,
                 exec_mode: app.exec_mode,
                 instances: app.instances,
-                watch: app.watch,
+                watch,
                 restart: app.restart,
                 max_memory_restart: app.max_memory_restart,
                 cron_restart: app.cron_restart,

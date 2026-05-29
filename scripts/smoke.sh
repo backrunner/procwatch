@@ -14,10 +14,12 @@ PROMON_BIN="${PROMON_BIN:-target/debug/promon}"
 "$PROMON_BIN" validate fixtures/node-apps/package-script/ecosystem.config.js
 "$PROMON_BIN" validate fixtures/node-apps/crash/ecosystem.config.json
 "$PROMON_BIN" validate fixtures/node-apps/scheduled/ecosystem.config.json
+"$PROMON_BIN" validate fixtures/node-apps/watcher/ecosystem.config.json
 "$PROMON_BIN" service status
 
 tmp_home="$(mktemp -d /tmp/promon-smoke.XXXXXX)"
-trap 'PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js >/dev/null 2>&1 || true; rm -rf "$tmp_home"' EXIT
+watch_pid=""
+trap 'if [ -n "${watch_pid:-}" ]; then kill "$watch_pid" >/dev/null 2>&1 || true; fi; PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop >/dev/null 2>&1 || true; PROMON_HOME="$tmp_home" "$PROMON_BIN" stop all >/dev/null 2>&1 || true; rm -rf "$tmp_home"' EXIT
 
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json
 sleep 1
@@ -46,6 +48,31 @@ sleep 1
 cluster_after_reload="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
 node -e 'const before = JSON.parse(process.argv[1]).processes.find((p) => p.name === "cluster-js"); const after = JSON.parse(process.argv[2]).processes.find((p) => p.name === "cluster-js"); if (!before || !after || before.pid !== after.pid) process.exit(1);' "$cluster_after_scale" "$cluster_after_reload"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop cluster-js
+watch_dir="$tmp_home/watch-fixture"
+mkdir -p "$watch_dir"
+cp fixtures/node-apps/watcher/server.js "$watch_dir/server.js"
+cp fixtures/node-apps/watcher/ecosystem.config.json "$watch_dir/ecosystem.config.json"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" watch "$watch_dir/ecosystem.config.json" --interval-ms 100 >"$tmp_home/watch.log" 2>&1 &
+watch_pid=$!
+sleep 1
+watch_before="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+printf '\n// smoke change\n' >> "$watch_dir/server.js"
+watch_restarted=""
+for _ in $(seq 1 30); do
+  watch_after="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+  if node -e 'const before = JSON.parse(process.argv[1]).processes.find((p) => p.name === "watcher-fixture"); const after = JSON.parse(process.argv[2]).processes.find((p) => p.name === "watcher-fixture"); process.exit(before && after && before.pid !== after.pid ? 0 : 1);' "$watch_before" "$watch_after"; then
+    watch_restarted=1
+    break
+  fi
+  sleep 0.2
+done
+test "$watch_restarted" = "1"
+set +e
+kill "$watch_pid" >/dev/null 2>&1 || true
+wait "$watch_pid" >/dev/null 2>&1 || true
+set -e
+watch_pid=""
+PROMON_HOME="$tmp_home" "$PROMON_BIN" stop watcher-fixture
 HOME="$tmp_home" "$PROMON_BIN" service install examples/basic/ecosystem.config.json
 HOME="$tmp_home" "$PROMON_BIN" service status
 HOME="$tmp_home" "$PROMON_BIN" service uninstall

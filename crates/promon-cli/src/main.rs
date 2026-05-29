@@ -2,6 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use promon_config::{find_config, load_config};
 use promon_core::{AppSpec, Instances, ManagedProcess, PromonConfig, ResolvedAppSpec};
 use promon_logging::tail_file;
@@ -18,6 +19,16 @@ use tokio::sync::Mutex;
 
 type DesiredApps = Arc<Mutex<Vec<ResolvedAppSpec>>>;
 const IPC_VERSION: u16 = 1;
+const DEFAULT_WATCH_IGNORES: &[&str] = &[
+    ".git",
+    ".promon",
+    "node_modules",
+    "target",
+    "**/.git/**",
+    "**/.promon/**",
+    "**/node_modules/**",
+    "**/target/**",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "promon", version, about = "Rust-first Node.js process manager")]
@@ -1428,6 +1439,16 @@ async fn run_status(program: &str, args: &[&str]) -> Result<()> {
 
 async fn watch(target: Option<PathBuf>, interval_ms: u64, json: bool) -> Result<()> {
     let apps = resolve_apps(target).await?;
+    let configured_apps: Vec<_> = apps
+        .iter()
+        .filter(|app| app.watch.enabled)
+        .cloned()
+        .collect();
+    let apps = if configured_apps.is_empty() {
+        apps
+    } else {
+        configured_apps
+    };
     for app in &apps {
         validate_app(app)?;
         start_app(app).await?;
@@ -1442,21 +1463,51 @@ async fn watch(target: Option<PathBuf>, interval_ms: u64, json: bool) -> Result<
 
     let mut snapshots = Vec::new();
     for app in &apps {
-        snapshots.push((app.clone(), snapshot_dir(&app.cwd)?));
+        snapshots.push(WatchedApp {
+            app: app.clone(),
+            snapshot: snapshot_app(app)?,
+            pending: None,
+        });
     }
 
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(interval_ms.max(100))).await;
-        for (app, snapshot) in &mut snapshots {
-            let next = snapshot_dir(&app.cwd)?;
-            if *snapshot != next {
-                *snapshot = next;
-                let restarted = restart_app(app).await?;
-                if json {
-                    print_json(serde_json::json!({ "restarted": restarted }))?;
-                } else {
-                    println!("Restarted {} after file change", app.name);
+        let now = std::time::Instant::now();
+        for watched in &mut snapshots {
+            let next = snapshot_app(&watched.app)?;
+            if let Some((pending_snapshot, changed_at)) = &watched.pending {
+                if &next != pending_snapshot {
+                    watched.pending = Some((next, now));
+                    continue;
                 }
+                if now.duration_since(*changed_at)
+                    < std::time::Duration::from_millis(watched.app.watch.debounce_ms.max(100))
+                {
+                    continue;
+                }
+
+                watched.snapshot = pending_snapshot.clone();
+                watched.pending = None;
+                if watched.app.watch.reload {
+                    let reloaded = reload_app(&watched.app).await?;
+                    if json {
+                        print_json(serde_json::json!({ "reloaded": reloaded }))?;
+                    } else {
+                        println!("Reloaded {} after file change", watched.app.name);
+                    }
+                } else {
+                    let restarted = restart_app(&watched.app).await?;
+                    if json {
+                        print_json(serde_json::json!({ "restarted": restarted }))?;
+                    } else {
+                        println!("Restarted {} after file change", watched.app.name);
+                    }
+                }
+                continue;
+            }
+
+            if watched.snapshot != next {
+                watched.pending = Some((next, now));
             }
         }
     }
@@ -1582,18 +1633,45 @@ async fn print_new_log_bytes(
     Ok(())
 }
 
-fn snapshot_dir(root: &std::path::Path) -> Result<std::collections::BTreeMap<PathBuf, u64>> {
+struct WatchedApp {
+    app: ResolvedAppSpec,
+    snapshot: std::collections::BTreeMap<PathBuf, u64>,
+    pending: Option<(std::collections::BTreeMap<PathBuf, u64>, std::time::Instant)>,
+}
+
+struct WatchMatcher {
+    include: Option<GlobSet>,
+    ignore: GlobSet,
+}
+
+fn snapshot_app(app: &ResolvedAppSpec) -> Result<std::collections::BTreeMap<PathBuf, u64>> {
     let mut snapshot = std::collections::BTreeMap::new();
-    collect_snapshot(root, root, &mut snapshot)?;
+    let matcher = watch_matcher(app)?;
+    for root in watch_roots(app) {
+        if !root.exists() {
+            continue;
+        }
+        collect_snapshot(&app.cwd, &root, &matcher, &mut snapshot)?;
+    }
     Ok(snapshot)
 }
 
 fn collect_snapshot(
-    root: &std::path::Path,
-    dir: &std::path::Path,
+    base: &std::path::Path,
+    path: &std::path::Path,
+    matcher: &WatchMatcher,
     snapshot: &mut std::collections::BTreeMap<PathBuf, u64>,
 ) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
+    let metadata = std::fs::metadata(path)?;
+    if metadata.is_file() {
+        collect_snapshot_file(base, path, &metadata, matcher, snapshot)?;
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name();
@@ -1605,17 +1683,181 @@ fn collect_snapshot(
             continue;
         }
         let metadata = entry.metadata()?;
+        if watch_ignored(base, &path, matcher) {
+            continue;
+        }
         if metadata.is_dir() {
-            collect_snapshot(root, &path, snapshot)?;
+            collect_snapshot(base, &path, matcher, snapshot)?;
         } else if metadata.is_file() {
-            let relative = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
-            let modified = metadata
-                .modified()?
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-            snapshot.insert(relative, modified ^ metadata.len());
+            collect_snapshot_file(base, &path, &metadata, matcher, snapshot)?;
         }
     }
     Ok(())
+}
+
+fn collect_snapshot_file(
+    base: &std::path::Path,
+    path: &std::path::Path,
+    metadata: &std::fs::Metadata,
+    matcher: &WatchMatcher,
+    snapshot: &mut std::collections::BTreeMap<PathBuf, u64>,
+) -> Result<()> {
+    if watch_ignored(base, path, matcher) || !watch_included(base, path, matcher) {
+        return Ok(());
+    }
+    let relative = path.strip_prefix(base).unwrap_or(path).to_path_buf();
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    snapshot.insert(relative, modified ^ metadata.len());
+    Ok(())
+}
+
+fn watch_roots(app: &ResolvedAppSpec) -> Vec<PathBuf> {
+    if app.watch.paths.is_empty() {
+        return vec![app.cwd.clone()];
+    }
+    app.watch
+        .paths
+        .iter()
+        .map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                app.cwd.join(path)
+            }
+        })
+        .collect()
+}
+
+fn watch_matcher(app: &ResolvedAppSpec) -> Result<WatchMatcher> {
+    let mut ignore = GlobSetBuilder::new();
+    for pattern in DEFAULT_WATCH_IGNORES
+        .iter()
+        .copied()
+        .chain(app.watch.ignore.iter().map(String::as_str))
+    {
+        add_watch_glob(&mut ignore, pattern)?;
+    }
+    let ignore = ignore.build()?;
+
+    let include = if app.watch.include.is_empty() {
+        None
+    } else {
+        let mut include = GlobSetBuilder::new();
+        for pattern in &app.watch.include {
+            add_watch_glob(&mut include, pattern)?;
+        }
+        Some(include.build()?)
+    };
+
+    Ok(WatchMatcher { include, ignore })
+}
+
+fn add_watch_glob(builder: &mut GlobSetBuilder, pattern: &str) -> Result<()> {
+    builder.add(Glob::new(pattern).with_context(|| format!("invalid watch glob: {pattern}"))?);
+    if !pattern.chars().any(|ch| matches!(ch, '*' | '?' | '[')) && !pattern.contains('/') {
+        builder.add(
+            Glob::new(&format!("**/{pattern}"))
+                .with_context(|| format!("invalid watch glob: {pattern}"))?,
+        );
+        builder.add(
+            Glob::new(&format!("**/{pattern}/**"))
+                .with_context(|| format!("invalid watch glob: {pattern}"))?,
+        );
+    }
+    Ok(())
+}
+
+fn watch_ignored(base: &std::path::Path, path: &std::path::Path, matcher: &WatchMatcher) -> bool {
+    let relative = path.strip_prefix(base).unwrap_or(path);
+    matcher.ignore.is_match(relative)
+}
+
+fn watch_included(base: &std::path::Path, path: &std::path::Path, matcher: &WatchMatcher) -> bool {
+    let Some(include) = &matcher.include else {
+        return true;
+    };
+    let relative = path.strip_prefix(base).unwrap_or(path);
+    include.is_match(relative)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use promon_core::{ExecMode, Instances, LogPolicy, RestartPolicy, WatchSpec};
+
+    use super::*;
+
+    #[test]
+    fn watch_snapshot_changes_for_tracked_files() {
+        let dir = temp_dir("snapshot-change");
+        std::fs::write(dir.join("server.js"), "console.log(1);\n").unwrap();
+        let mut app = test_app(&dir);
+        app.watch.paths = vec![PathBuf::from(".")];
+
+        let first = snapshot_app(&app).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(dir.join("server.js"), "console.log(2);\n").unwrap();
+        let second = snapshot_app(&app).unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn watch_snapshot_ignores_configured_paths() {
+        let dir = temp_dir("snapshot-ignore");
+        std::fs::create_dir_all(dir.join("tmp")).unwrap();
+        std::fs::write(dir.join("tmp").join("ignored.js"), "console.log(1);\n").unwrap();
+        let mut app = test_app(&dir);
+        app.watch.ignore = vec!["tmp".to_string()];
+
+        let first = snapshot_app(&app).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(dir.join("tmp").join("ignored.js"), "console.log(2);\n").unwrap();
+        let second = snapshot_app(&app).unwrap();
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(first, second);
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("promon-{name}-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_app(cwd: &std::path::Path) -> ResolvedAppSpec {
+        ResolvedAppSpec {
+            name: "watch-test".to_string(),
+            script: Some(PathBuf::from("server.js")),
+            command: None,
+            cwd: cwd.to_path_buf(),
+            args: Vec::new(),
+            node_args: Vec::new(),
+            interpreter: "node".to_string(),
+            interpreter_args: Vec::new(),
+            package_manager: None,
+            package_script: None,
+            env: BTreeMap::new(),
+            exec_mode: ExecMode::Fork,
+            instances: Instances::Count(1),
+            watch: WatchSpec {
+                enabled: true,
+                ..WatchSpec::default()
+            },
+            restart: RestartPolicy::default(),
+            max_memory_restart: None,
+            cron_restart: None,
+            log: LogPolicy::default(),
+        }
+    }
 }

@@ -5,9 +5,12 @@
       "script": "server.js",
       "cwd": ".",
       "watch": {
-        "enabled": true
-      }
+        "enabled": true,
+        "paths": ["."],
+        "ignore": ["tmp"],
+        "debounce_ms": 250
+      },
+      "ignore_watch": ["ignored.log"]
     }
   ]
 }
-
