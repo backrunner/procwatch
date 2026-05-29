@@ -691,9 +691,11 @@ async fn supervise_foreground_apps(apps: Vec<ResolvedAppSpec>) -> Result<()> {
     }
 
     let mut first_error: Option<anyhow::Error> = None;
+    let shutdown_signal = shutdown_signal();
+    tokio::pin!(shutdown_signal);
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c(), if !tasks.is_empty() => {
+            _ = &mut shutdown_signal, if !tasks.is_empty() => {
                 let _ = shutdown_tx.send(true);
                 break;
             }
