@@ -1,4 +1,4 @@
-# Promon Development Plan
+# Pumon Development Plan
 
 ## Phase 0: Repository Foundation
 
@@ -14,23 +14,23 @@ Deliverables:
 
 - `Cargo.toml` workspace.
 - Core crates under `crates/`.
-- npm wrapper under `packages/promon/`.
+- npm wrapper under `packages/pumon/`.
 - GitHub Actions workflow skeleton.
-- Basic `promon --version` and `promon doctor`.
+- Basic `pumon --version` and `pumon doctor`.
 - JS/TS fixtures covering CommonJS, ESM, TS via loader, TS prebuilt output, and package manager scripts.
 
 Recommended crates:
 
-- `promon-cli`
-- `promon-core`
-- `promon-daemon`
-- `promon-config`
-- `promon-process`
-- `promon-ipc`
-- `promon-service`
-- `promon-logging`
-- `promon-tui`
-- `promon-platform`
+- `pumon-cli`
+- `pumon-core`
+- `pumon-daemon`
+- `pumon-config`
+- `pumon-process`
+- `pumon-ipc`
+- `pumon-service`
+- `pumon-logging`
+- `pumon-tui`
+- `pumon-platform`
 
 ## Phase 1: JavaScript/TypeScript Config and Direct Process Supervision
 
@@ -46,11 +46,11 @@ Goals:
 
 Deliverables:
 
-- `promon init`.
-- `promon validate`.
-- `promon start`.
-- `promon stop`.
-- `promon list`.
+- `pumon init`.
+- `pumon validate`.
+- `pumon start`.
+- `pumon stop`.
+- `pumon list`.
 - JavaScript/TypeScript ecosystem config loader.
 - Runtime command resolver for `node`, local `node_modules/.bin`, npm, pnpm, Yarn, and Bun.
 - Log file creation.
@@ -60,7 +60,7 @@ Exit criteria:
 
 - Basic CommonJS, ESM, TypeScript-loader, TypeScript-prebuilt, and package-script HTTP servers can be started, listed, stopped, and inspected on macOS/Linux/Windows.
 - Invalid configs produce actionable errors.
-- `promon doctor` identifies missing Node.js, missing package managers, missing local TS loaders, and missing package scripts.
+- `pumon doctor` identifies missing Node.js, missing package managers, missing local TS loaders, and missing package scripts.
 
 ## Phase 2: Daemon and IPC
 
@@ -73,7 +73,7 @@ Goals:
 
 Deliverables:
 
-- `promon daemon start|stop|status`.
+- `pumon daemon start|stop|status`.
 - IPC request/response schema.
 - State persistence.
 - CLI auto-connect behavior.
@@ -118,7 +118,7 @@ Goals:
 
 Deliverables:
 
-- `promon logs [app]`.
+- `pumon logs [app]`.
 - Rotation worker or rotation-on-write strategy.
 - Log metadata and cleanup.
 - Tests for rotation boundaries.
@@ -141,8 +141,8 @@ Deliverables:
 - Node cluster shim package.
 - Rust supervisor integration for cluster master lifecycle.
 - Cluster compatibility for JavaScript scripts, TypeScript loader execution, and prebuilt TypeScript output.
-- `promon scale`.
-- `promon reload`.
+- `pumon scale`.
+- `pumon reload`.
 - Integration tests for multiple workers.
 
 Exit criteria:
@@ -176,12 +176,12 @@ Exit criteria:
 
 Goals:
 
-- Register Promon daemon as a system startup service.
+- Register Pumon daemon as a system startup service.
 - Support Linux, macOS, and Windows service backends.
 
 Deliverables:
 
-- `promon service install|uninstall|start|stop|status`.
+- `pumon service install|uninstall|start|stop|status`.
 - systemd backend.
 - launchd backend.
 - Windows Service backend.
@@ -189,7 +189,7 @@ Deliverables:
 
 Exit criteria:
 
-- Promon can start on boot/login and restore desired apps on each supported OS.
+- Pumon can start on boot/login and restore desired apps on each supported OS.
 - Installation failures have clear rollback and diagnostics.
 
 ## Phase 8: TUI
@@ -201,7 +201,7 @@ Goals:
 
 Deliverables:
 
-- `promon tui`.
+- `pumon tui`.
 - Process list.
 - Detail panel.
 - Logs panel.
@@ -217,7 +217,7 @@ Exit criteria:
 Goals:
 
 - Publish binaries through GitHub Releases.
-- Publish npm wrapper package for `npx promon`.
+- Publish npm wrapper package for `npx pumon`.
 - Separate stable, beta, and alpha channels.
 
 Deliverables:
@@ -230,7 +230,7 @@ Deliverables:
 
 Exit criteria:
 
-- Users can run stable through `npx promon`.
+- Users can run stable through `npx pumon`.
 - Users can opt into beta and alpha.
 - GitHub Releases contain platform-specific artifacts and checksums.
 
@@ -287,4 +287,4 @@ Manual release checks:
 - Implement graceful shutdown as a platform abstraction, with fallback force-kill.
 - Centralize log writes through one writer per stream where possible.
 - Execute JavaScript/TypeScript ecosystem configs only through a constrained loader process, then validate the resulting JSON in Rust.
-- Treat TypeScript execution as explicit runtime resolution: Promon supports configured loaders and prebuilt output, but does not compile projects automatically.
+- Treat TypeScript execution as explicit runtime resolution: Pumon supports configured loaders and prebuilt output, but does not compile projects automatically.

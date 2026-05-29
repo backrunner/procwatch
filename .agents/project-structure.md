@@ -1,9 +1,9 @@
-# Promon Project Structure
+# Pumon Project Structure
 
 ## Proposed Repository Layout
 
 ```text
-promon/
+pumon/
   .agents/
     README.md
     requirements.md
@@ -17,12 +17,12 @@ promon/
       release.yml
       npm.yml
   crates/
-    promon-cli/
+    pumon-cli/
       src/
         main.rs
         commands/
         output/
-    promon-core/
+    pumon-core/
       src/
         app.rs
         error.rs
@@ -30,28 +30,28 @@ promon/
         restart.rs
         spec.rs
         status.rs
-    promon-config/
+    pumon-config/
       src/
         detect.rs
         formats/
         lib.rs
         normalize.rs
         validate.rs
-    promon-daemon/
+    pumon-daemon/
       src/
         handlers/
         lib.rs
         reconcile.rs
         runtime.rs
         state/
-    promon-ipc/
+    pumon-ipc/
       src/
         client.rs
         lib.rs
         protocol.rs
         server.rs
         transport/
-    promon-process/
+    pumon-process/
       src/
         child.rs
         cluster.rs
@@ -59,53 +59,53 @@ promon/
         lib.rs
         supervisor.rs
         termination.rs
-    promon-node-support/
+    pumon-node-support/
       src/
         config_loader.rs
         lib.rs
         package_manager.rs
         runtime_resolver.rs
-    promon-platform/
+    pumon-platform/
       src/
         lib.rs
         metrics.rs
         paths.rs
         unix.rs
         windows.rs
-    promon-service/
+    pumon-service/
       src/
         lib.rs
         linux.rs
         macos.rs
         windows.rs
-    promon-logging/
+    pumon-logging/
       src/
         lib.rs
         rotate.rs
         tail.rs
         writer.rs
-    promon-watch/
+    pumon-watch/
       src/
         debounce.rs
         filters.rs
         lib.rs
         manager.rs
-    promon-scheduler/
+    pumon-scheduler/
       src/
         cron.rs
         lib.rs
         scheduler.rs
-    promon-tui/
+    pumon-tui/
       src/
         app.rs
         lib.rs
         screens/
         widgets/
   packages/
-    promon/
+    pumon/
       package.json
       bin/
-        promon.js
+        pumon.js
       scripts/
         install.js
         resolve-binary.js
@@ -166,10 +166,10 @@ promon/
 ## Workspace Rules
 
 - Keep Rust crates focused on one responsibility.
-- Put cross-platform abstractions in `promon-platform`, not scattered through feature code.
+- Put cross-platform abstractions in `pumon-platform`, not scattered through feature code.
 - Keep daemon command handling separate from the lower-level supervisor.
 - Keep CLI rendering separate from command behavior.
-- Treat `packages/promon` as a binary installer/wrapper, not the core implementation.
+- Treat `packages/pumon` as a binary installer/wrapper, not the core implementation.
 - Treat `packages/cluster-shim` as Node cluster runtime glue, not a general Node SDK.
 - Treat `packages/node-support` as bundled Node-side support code for config loading and JS/TS runtime glue.
 
@@ -199,22 +199,22 @@ When a file grows:
 Recommended dependency direction:
 
 ```text
-promon-cli       -> promon-core, promon-config, promon-ipc
-promon-tui       -> promon-core, promon-ipc
-promon-daemon    -> all core runtime crates
-promon-process   -> promon-core, promon-platform, promon-logging, promon-node-support
-promon-config    -> promon-core, promon-platform, promon-node-support
-promon-node-support -> promon-core, promon-platform
-promon-service   -> promon-core, promon-platform
-promon-ipc       -> promon-core
-promon-logging   -> promon-core, promon-platform
-promon-watch     -> promon-core
-promon-scheduler -> promon-core
-promon-platform  -> promon-core
-promon-core      -> minimal third-party dependencies
+pumon-cli       -> pumon-core, pumon-config, pumon-ipc
+pumon-tui       -> pumon-core, pumon-ipc
+pumon-daemon    -> all core runtime crates
+pumon-process   -> pumon-core, pumon-platform, pumon-logging, pumon-node-support
+pumon-config    -> pumon-core, pumon-platform, pumon-node-support
+pumon-node-support -> pumon-core, pumon-platform
+pumon-service   -> pumon-core, pumon-platform
+pumon-ipc       -> pumon-core
+pumon-logging   -> pumon-core, pumon-platform
+pumon-watch     -> pumon-core
+pumon-scheduler -> pumon-core
+pumon-platform  -> pumon-core
+pumon-core      -> minimal third-party dependencies
 ```
 
-Avoid dependency cycles by keeping shared types in `promon-core`.
+Avoid dependency cycles by keeping shared types in `pumon-core`.
 
 ## Recommended Rust Dependencies
 
@@ -263,9 +263,9 @@ Release:
 
 ## NPM Package Layout
 
-`packages/promon` should provide:
+`packages/pumon` should provide:
 
-- A `bin` entry named `promon`.
+- A `bin` entry named `pumon`.
 - An install script that downloads the correct binary.
 - A runtime fallback that downloads on first run if install scripts were skipped.
 - Channel selection through package dist-tags and environment variables.
@@ -288,7 +288,7 @@ The wrapper should:
 - Worker lifecycle reporting.
 - Graceful reload behavior.
 
-The shim should not become a public API unless a future product decision explicitly expands Promon beyond CLI use.
+The shim should not become a public API unless a future product decision explicitly expands Pumon beyond CLI use.
 
 ## Node Support Package Layout
 
@@ -298,7 +298,7 @@ The shim should not become a public API unless a future product decision explici
 - `package-json`: Reads package metadata and package scripts.
 - Shared protocol helpers for structured JSON output and errors.
 
-This package is internal runtime support. It should be versioned and bundled with Promon releases rather than installed into user projects.
+This package is internal runtime support. It should be versioned and bundled with Pumon releases rather than installed into user projects.
 
 ## Documentation Layout
 

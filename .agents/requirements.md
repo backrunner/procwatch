@@ -1,10 +1,10 @@
-# Promon Requirements
+# Pumon Requirements
 
 ## Product Summary
 
-Promon is a cross-platform Node.js process manager written primarily in Rust. It runs as a CLI and can also install a long-running Promon daemon as a system service. Users define JavaScript or TypeScript Node.js applications in an ecosystem-style configuration file, then use Promon to start, stop, restart, reload, scale, monitor, and inspect those applications.
+Pumon is a cross-platform Node.js process manager written primarily in Rust. It runs as a CLI and can also install a long-running Pumon daemon as a system service. Users define JavaScript or TypeScript Node.js applications in an ecosystem-style configuration file, then use Pumon to start, stop, restart, reload, scale, monitor, and inspect those applications.
 
-Promon is inspired by PM2 but is not required to be command-compatible in the first release. Compatibility should focus on familiar concepts: ecosystem files, managed process lists, cluster mode, restart policies, logs, watch mode, and service startup.
+Pumon is inspired by PM2 but is not required to be command-compatible in the first release. Compatibility should focus on familiar concepts: ecosystem files, managed process lists, cluster mode, restart policies, logs, watch mode, and service startup.
 
 ## Target Users
 
@@ -15,7 +15,7 @@ Promon is inspired by PM2 but is not required to be command-compatible in the fi
 
 ## First-Batch Node.js Project Support
 
-Promon must fully support common JavaScript and TypeScript Node.js projects in the first public release. TypeScript support is not a later enhancement.
+Pumon must fully support common JavaScript and TypeScript Node.js projects in the first public release. TypeScript support is not a later enhancement.
 
 Required project types:
 
@@ -41,18 +41,18 @@ Required package manager awareness:
 - Detect `packageManager` from `package.json` where helpful.
 - Support npm, pnpm, Yarn, and Bun command invocation for Node.js project scripts.
 - Do not install dependencies automatically unless a future explicit command is added.
-- `promon doctor` must report missing Node.js, missing package manager, missing script, or missing local runtime loader.
+- `pumon doctor` must report missing Node.js, missing package manager, missing script, or missing local runtime loader.
 
 Required TypeScript expectations:
 
-- Promon does not compile TypeScript by default.
-- Promon must allow users to run TypeScript directly through configured loaders/runners.
-- Promon must allow users to run prebuilt TypeScript output.
-- Error messages must distinguish Promon configuration failures from application/runtime loader failures.
+- Pumon does not compile TypeScript by default.
+- Pumon must allow users to run TypeScript directly through configured loaders/runners.
+- Pumon must allow users to run prebuilt TypeScript output.
+- Error messages must distinguish Pumon configuration failures from application/runtime loader failures.
 
 ## Supported Platforms
 
-Promon must support:
+Pumon must support:
 
 - Linux x86_64 and arm64.
 - macOS x86_64 and arm64.
@@ -64,26 +64,26 @@ Platform-specific behavior must be isolated behind traits/modules so the rest of
 
 The CLI should support these commands in the first major delivery:
 
-- `promon init`: Create a sample ecosystem config.
-- `promon start <script|config>`: Start one script or all apps in a config.
-- `promon stop <app|id|all>`: Stop managed processes.
-- `promon restart <app|id|all>`: Restart processes.
-- `promon reload <app|id|all>`: Gracefully reload where possible.
-- `promon scale <app> <instances>`: Increase or decrease cluster workers.
-- `promon list`: Show managed apps and worker state.
-- `promon status [app]`: Show detailed state.
-- `promon logs [app]`: Stream stdout/stderr from managed processes.
-- `promon tui`: Open the interactive terminal UI.
-- `promon daemon start|stop|status`: Manage the user/session daemon.
-- `promon service install|uninstall|start|stop|status`: Register Promon as a system service.
-- `promon validate [config]`: Validate configuration without starting apps.
-- `promon doctor`: Diagnose Node.js path, service permissions, log directories, and platform support.
+- `pumon init`: Create a sample ecosystem config.
+- `pumon start <script|config>`: Start one script or all apps in a config.
+- `pumon stop <app|id|all>`: Stop managed processes.
+- `pumon restart <app|id|all>`: Restart processes.
+- `pumon reload <app|id|all>`: Gracefully reload where possible.
+- `pumon scale <app> <instances>`: Increase or decrease cluster workers.
+- `pumon list`: Show managed apps and worker state.
+- `pumon status [app]`: Show detailed state.
+- `pumon logs [app]`: Stream stdout/stderr from managed processes.
+- `pumon tui`: Open the interactive terminal UI.
+- `pumon daemon start|stop|status`: Manage the user/session daemon.
+- `pumon service install|uninstall|start|stop|status`: Register Pumon as a system service.
+- `pumon validate [config]`: Validate configuration without starting apps.
+- `pumon doctor`: Diagnose Node.js path, service permissions, log directories, and platform support.
 
 Command names may evolve during implementation, but the workflows above are required.
 
 ## Ecosystem Configuration
 
-Promon should support an ecosystem-style config file with JavaScript familiarity but Rust-friendly parsing.
+Pumon should support an ecosystem-style config file with JavaScript familiarity but Rust-friendly parsing.
 
 Required file names:
 
@@ -97,7 +97,7 @@ Required file names:
 - `ecosystem.config.toml`
 - `ecosystem.config.yaml` or `ecosystem.config.yml`
 
-Initial config support must include JavaScript and TypeScript ecosystem files. Promon may implement this by invoking Node.js in a constrained config loader that imports or requires the config, normalizes it to JSON, and sends it back to Rust for validation.
+Initial config support must include JavaScript and TypeScript ecosystem files. Pumon may implement this by invoking Node.js in a constrained config loader that imports or requires the config, normalizes it to JSON, and sends it back to Rust for validation.
 
 Config loading requirements:
 
@@ -131,16 +131,16 @@ Required app fields:
 - `cron_restart`: Cron expression or fixed interval for scheduled restarts.
 - `log`: Log configuration object.
 
-Required Promon-level fields:
+Required Pumon-level fields:
 
-- `promon.home`: State directory override.
-- `promon.daemon`: Daemon behavior.
-- `promon.log_rotate`: Default log rotation policy.
-- `promon.node_path`: Node executable override.
+- `pumon.home`: State directory override.
+- `pumon.daemon`: Daemon behavior.
+- `pumon.log_rotate`: Default log rotation policy.
+- `pumon.node_path`: Node executable override.
 
 ## Process Lifecycle
 
-Promon must:
+Pumon must:
 
 - Spawn Node.js child processes with deterministic working directory, environment, arguments, and stdio capture.
 - Persist desired app state so the daemon can reconcile actual state after restart.
@@ -153,7 +153,7 @@ Promon must:
 
 ## System Service and Daemon Support
 
-Promon must support registering a daemon that starts automatically on system boot or user login.
+Pumon must support registering a daemon that starts automatically on system boot or user login.
 
 Required platform integrations:
 
@@ -164,14 +164,14 @@ Required platform integrations:
 Service installation must:
 
 - Generate predictable service files/manifests.
-- Store service metadata in Promon state.
+- Store service metadata in Pumon state.
 - Validate paths and permissions before writing service definitions.
 - Provide clear rollback behavior if installation fails.
 - Avoid hiding platform-specific permission requirements.
 
 ## Cluster Mode
 
-Promon must support multiple Node.js worker processes for one app.
+Pumon must support multiple Node.js worker processes for one app.
 
 Required behavior:
 
@@ -183,14 +183,14 @@ Required behavior:
 
 Load balancing options:
 
-1. Preferred: Promon launches a TypeScript/JavaScript cluster shim that uses Node.js `cluster` and lets Node own port sharing and round-robin behavior.
-2. Alternative: Promon directly supervises N workers and relies on OS/socket behavior only where safe.
+1. Preferred: Pumon launches a TypeScript/JavaScript cluster shim that uses Node.js `cluster` and lets Node own port sharing and round-robin behavior.
+2. Alternative: Pumon directly supervises N workers and relies on OS/socket behavior only where safe.
 
 The initial stable cluster implementation should use a Node-side cluster shim because Node's cluster module already handles platform-specific balancing semantics.
 
 ## Restart Policies
 
-Promon must support:
+Pumon must support:
 
 - Restart on crash.
 - Restart after memory threshold is exceeded.
@@ -203,7 +203,7 @@ Memory checks should be implemented by platform-specific process metrics, normal
 
 ## Watch Mode
 
-Promon must support watch mode for local development and controlled production reloads.
+Pumon must support watch mode for local development and controlled production reloads.
 
 Required behavior:
 
@@ -216,20 +216,20 @@ Required behavior:
 
 ## Logs
 
-Promon must centrally capture stdout and stderr for every managed process.
+Pumon must centrally capture stdout and stderr for every managed process.
 
 Required behavior:
 
 - Separate stdout and stderr files per app or per worker.
 - Optional merged log stream.
-- `promon logs` follows logs in real time.
-- Log entries include app name, worker id, stream, and timestamp when viewed through Promon.
+- `pumon logs` follows logs in real time.
+- Log entries include app name, worker id, stream, and timestamp when viewed through Pumon.
 - Built-in log rotation by size and retention count.
 - Optional compression can be added after initial rotation is stable.
 
 ## TUI
 
-Promon must provide a terminal UI for operational management.
+Pumon must provide a terminal UI for operational management.
 
 Required views:
 
@@ -244,7 +244,7 @@ The TUI should be powered by the same daemon API as the CLI so behavior stays co
 
 ## Persistence
 
-Promon must store:
+Pumon must store:
 
 - App desired state.
 - Runtime process state.

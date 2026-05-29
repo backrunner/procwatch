@@ -1,26 +1,26 @@
-# Promon
+# Pumon
 
-Promon is a Rust-first Node.js process manager for JavaScript and TypeScript projects.
+Pumon is a Rust-first Node.js process manager for JavaScript and TypeScript projects.
 
 This repository currently contains the first MVP implementation:
 
-- `promon init`
-- `promon validate`
-- `promon doctor`
-- `promon prune`
-- `promon start`
-- `promon start --wait`
-- `promon stop`
-- `promon restart`
-- `promon reload`
-- `promon scale`
-- `promon status`
-- `promon list`
-- `promon logs`
-- `promon watch`
-- `promon daemon`
-- `promon service`
-- `promon tui`
+- `pumon init`
+- `pumon validate`
+- `pumon doctor`
+- `pumon prune`
+- `pumon start`
+- `pumon start --wait`
+- `pumon stop`
+- `pumon restart`
+- `pumon reload`
+- `pumon scale`
+- `pumon status`
+- `pumon list`
+- `pumon logs`
+- `pumon watch`
+- `pumon daemon`
+- `pumon service`
+- `pumon tui`
 
 Current implemented surface:
 
