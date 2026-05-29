@@ -2338,11 +2338,11 @@ fn service_file_path() -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         let home = std::env::var("HOME")?;
-        return Ok(PathBuf::from(home)
+        Ok(PathBuf::from(home)
             .join(".config")
             .join("systemd")
             .join("user")
-            .join("pumon.service"));
+            .join("pumon.service"))
     }
 
     #[cfg(windows)]
@@ -2521,13 +2521,13 @@ fn service_file_content(exe: &std::path::Path, config: &std::path::Path) -> Resu
     #[cfg(target_os = "linux")]
     {
         let runtime_dir = service_runtime_dir();
-        return Ok(format!(
+        Ok(format!(
             "[Unit]\nDescription=Pumon process supervisor\n\n[Service]\nWorkingDirectory={}\nEnvironment={}\nExecStart={} daemon run {}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
             systemd_quote(&runtime_dir),
             systemd_environment("PUMON_HOME", &pumon_home()),
             systemd_quote(exe),
             systemd_quote(config)
-        ));
+        ))
     }
 
     #[cfg(windows)]
@@ -2598,9 +2598,10 @@ async fn service_start_command(path: &std::path::Path) -> Result<String> {
 
     #[cfg(target_os = "linux")]
     {
+        let _ = path;
         run_status("systemctl", &["--user", "daemon-reload"]).await?;
         run_status("systemctl", &["--user", "enable", "--now", "pumon.service"]).await?;
-        return Ok("systemd user service enabled and started".to_string());
+        Ok("systemd user service enabled and started".to_string())
     }
 
     #[cfg(windows)]
@@ -2650,7 +2651,7 @@ async fn service_stop_command(path: &std::path::Path) -> Result<String> {
             &["--user", "disable", "--now", "pumon.service"],
         )
         .await?;
-        return Ok("systemd user service stopped and disabled".to_string());
+        Ok("systemd user service stopped and disabled".to_string())
     }
 
     #[cfg(windows)]
@@ -2662,6 +2663,7 @@ async fn service_stop_command(path: &std::path::Path) -> Result<String> {
     }
 }
 
+#[cfg(target_os = "macos")]
 async fn command_output(program: &str, args: &[&str]) -> Result<String> {
     let output = tokio::process::Command::new(program)
         .args(args)
@@ -2674,11 +2676,14 @@ async fn command_output(program: &str, args: &[&str]) -> Result<String> {
 }
 
 struct CommandCapture {
+    #[allow(dead_code)]
     success: bool,
     stdout: String,
+    #[allow(dead_code)]
     stderr: String,
 }
 
+#[cfg(target_os = "macos")]
 fn first_nonempty<'a>(primary: &'a str, fallback: &'a str) -> Option<&'a str> {
     if !primary.is_empty() {
         Some(primary)
