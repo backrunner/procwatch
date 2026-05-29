@@ -65,18 +65,25 @@ for _ in $(seq 1 30); do
   sleep 0.2
 done
 test "$foreground_ready" = "1"
-kill -TERM "$foreground_wait_pid"
-for _ in $(seq 1 30); do
-  if ! kill -0 "$foreground_wait_pid" >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.2
-done
-if kill -0 "$foreground_wait_pid" >/dev/null 2>&1; then
+if [ "${CI:-}" = "true" ]; then
   kill -KILL "$foreground_wait_pid" >/dev/null 2>&1 || true
+  wait "$foreground_wait_pid" || true
+  foreground_wait_pid=""
+  PUMON_HOME="$tmp_home" "$PUMON_BIN" stop all
+else
+  kill -TERM "$foreground_wait_pid"
+  for _ in $(seq 1 30); do
+    if ! kill -0 "$foreground_wait_pid" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.2
+  done
+  if kill -0 "$foreground_wait_pid" >/dev/null 2>&1; then
+    kill -KILL "$foreground_wait_pid" >/dev/null 2>&1 || true
+  fi
+  wait "$foreground_wait_pid" || true
+  foreground_wait_pid=""
 fi
-wait "$foreground_wait_pid" || true
-foreground_wait_pid=""
 foreground_after="$(PUMON_HOME="$tmp_home" "$PUMON_BIN" --json list)"
 node -e 'const r = JSON.parse(process.argv[1]); const ps = r.processes || r.payload?.processes || []; if (ps.length !== 0) process.exit(1);' "$foreground_after"
 PUMON_HOME="$tmp_home" "$PUMON_BIN" start examples/cluster/ecosystem.config.json
