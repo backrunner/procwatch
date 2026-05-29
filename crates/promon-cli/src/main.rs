@@ -2121,7 +2121,7 @@ async fn shutdown_signal() {
 }
 
 async fn service_install(config: Option<PathBuf>, json: bool) -> Result<()> {
-    let config = resolve_config(config)?;
+    let config = std::fs::canonicalize(resolve_config(config)?)?;
     let exe = std::env::current_exe()?;
     let path = service_file_path()?;
     if let Some(parent) = path.parent() {
@@ -2469,19 +2469,28 @@ async fn service_start_command(path: &std::path::Path) -> Result<String> {
     {
         let uid = command_output("id", &["-u"]).await?;
         let target = format!("gui/{}", uid.trim());
-        let status = tokio::process::Command::new("launchctl")
-            .args(["bootstrap", &target, &path.display().to_string()])
-            .status()
-            .await?;
-        if !status.success() {
-            let _ = tokio::process::Command::new("launchctl")
-                .args([
+        let status = command_capture(
+            "launchctl",
+            &["bootstrap", &target, &path.display().to_string()],
+        )
+        .await?;
+        if !status.success {
+            let kickstart = command_capture(
+                "launchctl",
+                &[
                     "kickstart",
                     "-k",
                     &format!("{target}/top.backrunner.promon"),
-                ])
-                .status()
-                .await?;
+                ],
+            )
+            .await?;
+            if !kickstart.success {
+                anyhow::bail!(
+                    "launchctl bootstrap failed: {}",
+                    first_nonempty(status.stderr.trim(), status.stdout.trim())
+                        .unwrap_or("unknown launchctl error")
+                );
+            }
         }
         Ok(format!("launchd service started via {}", path.display()))
     }
@@ -2520,12 +2529,18 @@ async fn service_stop_command(path: &std::path::Path) -> Result<String> {
     {
         let uid = command_output("id", &["-u"]).await?;
         let target = format!("gui/{}", uid.trim());
-        let status = tokio::process::Command::new("launchctl")
-            .args(["bootout", &target, &path.display().to_string()])
-            .status()
-            .await?;
-        if !status.success() {
-            anyhow::bail!("launchctl bootout failed for {}", path.display());
+        let status = command_capture(
+            "launchctl",
+            &["bootout", &target, &path.display().to_string()],
+        )
+        .await?;
+        if !status.success {
+            anyhow::bail!(
+                "launchctl bootout failed for {}: {}",
+                path.display(),
+                first_nonempty(status.stderr.trim(), status.stdout.trim())
+                    .unwrap_or("unknown launchctl error")
+            );
         }
         Ok(format!("launchd service stopped via {}", path.display()))
     }
@@ -2565,6 +2580,16 @@ struct CommandCapture {
     success: bool,
     stdout: String,
     stderr: String,
+}
+
+fn first_nonempty<'a>(primary: &'a str, fallback: &'a str) -> Option<&'a str> {
+    if !primary.is_empty() {
+        Some(primary)
+    } else if !fallback.is_empty() {
+        Some(fallback)
+    } else {
+        None
+    }
 }
 
 async fn command_capture(program: &str, args: &[&str]) -> Result<CommandCapture> {
