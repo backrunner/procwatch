@@ -13,8 +13,14 @@ const packageRoot = path.resolve(here, "..");
 const repoRoot = path.resolve(packageRoot, "../..");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
 const localBinary = path.join(repoRoot, "target", "debug", process.platform === "win32" ? "promon.exe" : "promon");
-const loader = path.join(repoRoot, "packages", "node-support", "dist", "config-loader.js");
-const clusterShim = path.join(repoRoot, "packages", "cluster-shim", "dist", "index.js");
+const loader = resolveAsset(
+  path.join(packageRoot, "vendor", "node-support", "config-loader.js"),
+  path.join(repoRoot, "packages", "node-support", "dist", "config-loader.js")
+);
+const clusterShim = resolveAsset(
+  path.join(packageRoot, "vendor", "cluster-shim", "index.js"),
+  path.join(repoRoot, "packages", "cluster-shim", "dist", "index.js")
+);
 
 const binary = existsSync(localBinary) ? localBinary : await ensureReleaseBinary();
 const result = spawnSync(binary, process.argv.slice(2), {
@@ -76,6 +82,12 @@ function cacheRoot() {
   if (process.platform === "darwin") return path.join(process.env.HOME || tmpdir(), "Library", "Caches", "promon", "bin");
   if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA || tmpdir(), "promon", "Cache", "bin");
   return path.join(process.env.XDG_CACHE_HOME || path.join(process.env.HOME || tmpdir(), ".cache"), "promon", "bin");
+}
+
+function resolveAsset(preferred, fallback) {
+  if (existsSync(preferred)) return preferred;
+  if (existsSync(fallback)) return fallback;
+  throw new Error(`required Promon runtime asset is missing: ${preferred}`);
 }
 
 function download(url, dest) {

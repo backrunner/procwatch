@@ -2,12 +2,19 @@
   "name": "promon",
   "version": "0.1.0",
   "private": false,
+  "files": [
+    "bin",
+    "scripts",
+    "src",
+    "vendor"
+  ],
   "bin": {
     "promon": "bin/promon.js"
   },
   "scripts": {
+    "prepack": "node scripts/sync-assets.mjs",
     "install": "node scripts/install.js",
-    "test": "node bin/promon.js --version"
+    "test": "node scripts/sync-assets.mjs && node bin/promon.js --version"
   },
   "type": "module"
 }
