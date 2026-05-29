@@ -12,4 +12,6 @@ Platform output:
 - Linux: `~/.config/systemd/user/promon.service`
 - Windows: a command file under `PROMON_HOME/service`
 
+On macOS the generated LaunchAgent writes stdout and stderr to `PROMON_HOME/daemon/service.out.log` and `PROMON_HOME/daemon/service.err.log`.
+
 `promon service start` and `promon service stop` call `launchctl` on macOS and `systemctl --user` on Linux. `promon service status` also reports backend-specific state such as loaded, active, and enabled where the platform supports it. Windows native service registration remains the next hardening step.

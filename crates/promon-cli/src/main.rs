@@ -2068,6 +2068,7 @@ async fn service_install(config: Option<PathBuf>, json: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
+    tokio::fs::create_dir_all(service_runtime_dir()).await?;
     let content = service_file_content(&exe, &config)?;
     tokio::fs::write(&path, content).await?;
     if json {
@@ -2107,7 +2108,9 @@ async fn service_stop(json: bool) -> Result<()> {
 async fn service_uninstall(json: bool) -> Result<()> {
     let path = service_file_path()?;
     if path.exists() {
+        let _ = service_stop_command(&path).await;
         tokio::fs::remove_file(&path).await?;
+        service_post_uninstall().await?;
     }
     if json {
         print_json(serde_json::json!({ "removed": path }))?;
@@ -2152,6 +2155,10 @@ async fn service_status(json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn service_runtime_dir() -> PathBuf {
+    promon_home().join("daemon")
 }
 
 fn service_file_path() -> Result<PathBuf> {
@@ -2315,6 +2322,9 @@ async fn service_status_snapshot() -> Result<ServiceStatusSnapshot> {
 fn service_file_content(exe: &std::path::Path, config: &std::path::Path) -> Result<String> {
     #[cfg(target_os = "macos")]
     {
+        let runtime_dir = service_runtime_dir();
+        let stdout_log = runtime_dir.join("service.out.log");
+        let stderr_log = runtime_dir.join("service.err.log");
         Ok(format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -2328,20 +2338,29 @@ fn service_file_content(exe: &std::path::Path, config: &std::path::Path) -> Resu
     <string>run</string>
     <string>{}</string>
   </array>
+  <key>WorkingDirectory</key><string>{}</string>
+  <key>StandardOutPath</key><string>{}</string>
+  <key>StandardErrorPath</key><string>{}</string>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
 </dict>
 </plist>
 "#,
-            exe.display(),
-            config.display()
+            plist_escape(exe),
+            plist_escape(config),
+            plist_escape(&runtime_dir),
+            plist_escape(&stdout_log),
+            plist_escape(&stderr_log),
         ))
     }
 
     #[cfg(target_os = "linux")]
     {
+        let runtime_dir = service_runtime_dir();
         return Ok(format!(
-            "[Unit]\nDescription=Promon process supervisor\n\n[Service]\nExecStart={} daemon run {}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+            "[Unit]\nDescription=Promon process supervisor\n\n[Service]\nWorkingDirectory={}\nEnvironment={}\nExecStart={} daemon run {}\nRestart=always\n\n[Install]\nWantedBy=default.target\n",
+            systemd_quote(&runtime_dir),
+            systemd_environment("PROMON_HOME", &promon_home()),
             systemd_quote(exe),
             systemd_quote(config)
         ));
@@ -2357,6 +2376,15 @@ fn service_file_content(exe: &std::path::Path, config: &std::path::Path) -> Resu
     }
 }
 
+#[cfg(target_os = "macos")]
+fn plist_escape(path: &std::path::Path) -> String {
+    path.display()
+        .to_string()
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 #[cfg(target_os = "linux")]
 fn systemd_quote(path: &std::path::Path) -> String {
     let value = path
@@ -2365,6 +2393,16 @@ fn systemd_quote(path: &std::path::Path) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     format!("\"{value}\"")
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_environment(name: &str, value: &std::path::Path) -> String {
+    let quoted = value
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    format!("\"{name}={quoted}\"")
 }
 
 async fn service_start_command(path: &std::path::Path) -> Result<String> {
@@ -2407,6 +2445,15 @@ async fn service_start_command(path: &std::path::Path) -> Result<String> {
             "Windows native service registration is not available in this MVP backend".to_string(),
         );
     }
+}
+
+async fn service_post_uninstall() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = command_capture("systemctl", &["--user", "daemon-reload"]).await?;
+    }
+
+    Ok(())
 }
 
 async fn service_stop_command(path: &std::path::Path) -> Result<String> {
