@@ -235,6 +235,10 @@ struct DoctorServiceReport {
     backend: &'static str,
     path: Option<PathBuf>,
     installed: bool,
+    loaded: Option<bool>,
+    active: Option<bool>,
+    enabled: Option<bool>,
+    detail: Option<String>,
     error: Option<String>,
 }
 
@@ -417,17 +421,25 @@ async fn ensure_directory_writable(path: &std::path::Path) -> Result<()> {
 }
 
 async fn doctor_service_report() -> DoctorServiceReport {
-    match service_file_path() {
-        Ok(path) => DoctorServiceReport {
-            backend: service_backend_name(),
-            installed: path.exists(),
-            path: Some(path),
+    match service_status_snapshot().await {
+        Ok(snapshot) => DoctorServiceReport {
+            backend: snapshot.backend,
+            path: snapshot.path,
+            installed: snapshot.installed,
+            loaded: snapshot.loaded,
+            active: snapshot.active,
+            enabled: snapshot.enabled,
+            detail: snapshot.detail,
             error: None,
         },
         Err(error) => DoctorServiceReport {
             backend: service_backend_name(),
             installed: false,
             path: None,
+            loaded: None,
+            active: None,
+            enabled: None,
+            detail: None,
             error: Some(error.to_string()),
         },
     }
@@ -543,6 +555,18 @@ fn print_doctor_report(report: &DoctorReport) {
             "no"
         }
     );
+    if let Some(loaded) = report.service.loaded {
+        println!("Service loaded: {}", if loaded { "yes" } else { "no" });
+    }
+    if let Some(active) = report.service.active {
+        println!("Service active: {}", if active { "yes" } else { "no" });
+    }
+    if let Some(enabled) = report.service.enabled {
+        println!("Service enabled: {}", if enabled { "yes" } else { "no" });
+    }
+    if let Some(detail) = &report.service.detail {
+        println!("Service detail: {detail}");
+    }
     if let Some(error) = &report.service.error {
         println!("Service error: {error}");
     }
@@ -2094,19 +2118,38 @@ async fn service_uninstall(json: bool) -> Result<()> {
 }
 
 async fn service_status(json: bool) -> Result<()> {
-    let path = service_file_path()?;
+    let snapshot = service_status_snapshot().await?;
     if json {
-        print_json(serde_json::json!({ "path": path, "installed": path.exists() }))?;
+        print_json(serde_json::json!({
+            "backend": snapshot.backend,
+            "path": snapshot.path,
+            "installed": snapshot.installed,
+            "loaded": snapshot.loaded,
+            "active": snapshot.active,
+            "enabled": snapshot.enabled,
+            "detail": snapshot.detail,
+        }))?;
     } else {
+        println!("backend: {}", snapshot.backend);
+        if let Some(path) = &snapshot.path {
+            println!("path: {}", path.display());
+        }
         println!(
-            "{}: {}",
-            path.display(),
-            if path.exists() {
-                "installed"
-            } else {
-                "not installed"
-            }
+            "installed: {}",
+            if snapshot.installed { "yes" } else { "no" }
         );
+        if let Some(loaded) = snapshot.loaded {
+            println!("loaded: {}", if loaded { "yes" } else { "no" });
+        }
+        if let Some(active) = snapshot.active {
+            println!("active: {}", if active { "yes" } else { "no" });
+        }
+        if let Some(enabled) = snapshot.enabled {
+            println!("enabled: {}", if enabled { "yes" } else { "no" });
+        }
+        if let Some(detail) = &snapshot.detail {
+            println!("detail: {detail}");
+        }
     }
     Ok(())
 }
@@ -2135,6 +2178,138 @@ fn service_file_path() -> Result<PathBuf> {
     {
         return Ok(promon_home().join("service").join("promon-service.txt"));
     }
+}
+
+struct ServiceStatusSnapshot {
+    backend: &'static str,
+    path: Option<PathBuf>,
+    installed: bool,
+    loaded: Option<bool>,
+    active: Option<bool>,
+    enabled: Option<bool>,
+    detail: Option<String>,
+}
+
+async fn service_status_snapshot() -> Result<ServiceStatusSnapshot> {
+    let path = service_file_path()?;
+    let installed = path.exists();
+
+    #[cfg(target_os = "macos")]
+    {
+        if !installed {
+            return Ok(ServiceStatusSnapshot {
+                backend: service_backend_name(),
+                path: Some(path),
+                installed: false,
+                loaded: Some(false),
+                active: Some(false),
+                enabled: None,
+                detail: None,
+            });
+        }
+
+        let uid = command_output("id", &["-u"]).await?;
+        let label = "top.backrunner.promon";
+        let target = format!("gui/{}/{}", uid.trim(), label);
+        let output = command_capture("launchctl", &["print", &target]).await?;
+        let loaded = output.success;
+        let active = output.success && output.stdout.contains("state = running");
+        let detail = if output.success {
+            if active {
+                Some("launchd job is running".to_string())
+            } else {
+                Some("launchd job is loaded".to_string())
+            }
+        } else {
+            Some(output.stderr.trim().to_string())
+        }
+        .filter(|value| !value.is_empty());
+
+        return Ok(ServiceStatusSnapshot {
+            backend: service_backend_name(),
+            path: Some(path),
+            installed: true,
+            loaded: Some(loaded),
+            active: Some(active),
+            enabled: None,
+            detail,
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if !installed {
+            return Ok(ServiceStatusSnapshot {
+                backend: service_backend_name(),
+                path: Some(path),
+                installed: false,
+                loaded: Some(false),
+                active: Some(false),
+                enabled: Some(false),
+                detail: None,
+            });
+        }
+
+        let active =
+            command_capture("systemctl", &["--user", "is-active", "promon.service"]).await?;
+        let enabled =
+            command_capture("systemctl", &["--user", "is-enabled", "promon.service"]).await?;
+        let daemon_reload = command_capture(
+            "systemctl",
+            &["--user", "show", "promon.service", "--property=LoadState"],
+        )
+        .await?;
+
+        let loaded = daemon_reload.stdout.contains("LoadState=loaded");
+        let active_state = active.stdout.trim() == "active";
+        let enabled_state = matches!(enabled.stdout.trim(), "enabled" | "linked");
+        let detail = [
+            daemon_reload.stdout.trim(),
+            active.stdout.trim(),
+            enabled.stdout.trim(),
+        ]
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+        return Ok(ServiceStatusSnapshot {
+            backend: service_backend_name(),
+            path: Some(path),
+            installed: true,
+            loaded: Some(loaded),
+            active: Some(active_state),
+            enabled: Some(enabled_state),
+            detail: (!detail.is_empty()).then_some(detail),
+        });
+    }
+
+    #[cfg(windows)]
+    {
+        return Ok(ServiceStatusSnapshot {
+            backend: service_backend_name(),
+            path: Some(path),
+            installed,
+            loaded: None,
+            active: None,
+            enabled: None,
+            detail: Some(
+                "Windows native service registration is not available in this MVP backend"
+                    .to_string(),
+            ),
+        });
+    }
+
+    #[allow(unreachable_code)]
+    Ok(ServiceStatusSnapshot {
+        backend: service_backend_name(),
+        path: Some(path),
+        installed,
+        loaded: None,
+        active: None,
+        enabled: None,
+        detail: None,
+    })
 }
 
 fn service_file_content(exe: &std::path::Path, config: &std::path::Path) -> Result<String> {
@@ -2278,6 +2453,24 @@ async fn command_output(program: &str, args: &[&str]) -> Result<String> {
         anyhow::bail!("{program} failed with status {}", output.status);
     }
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+struct CommandCapture {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+async fn command_capture(program: &str, args: &[&str]) -> Result<CommandCapture> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await?;
+    Ok(CommandCapture {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
 }
 
 #[cfg(target_os = "linux")]
