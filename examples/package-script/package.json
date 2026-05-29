@@ -1,5 +1,5 @@
 {
-  "name": "promon-package-script-example",
+  "name": "pumon-package-script-example",
   "type": "module",
   "scripts": {
     "start": "node server.mjs"

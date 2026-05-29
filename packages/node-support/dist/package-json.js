@@ -9,4 +9,3 @@ export async function readPackageJson(cwd) {
         return null;
     }
 }
-

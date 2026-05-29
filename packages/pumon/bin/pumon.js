@@ -12,7 +12,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(here, "..");
 const repoRoot = path.resolve(packageRoot, "../..");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
-const localBinary = path.join(repoRoot, "target", "debug", process.platform === "win32" ? "promon.exe" : "promon");
+const localBinary = path.join(repoRoot, "target", "debug", process.platform === "win32" ? "pumon.exe" : "pumon");
 const loader = resolveAsset(
   path.join(packageRoot, "vendor", "node-support", "config-loader.js"),
   path.join(repoRoot, "packages", "node-support", "dist", "config-loader.js")
@@ -27,8 +27,8 @@ const result = spawnSync(binary, process.argv.slice(2), {
   stdio: "inherit",
   env: {
     ...process.env,
-    PROMON_NODE_SUPPORT_LOADER: process.env.PROMON_NODE_SUPPORT_LOADER || loader,
-    PROMON_CLUSTER_SHIM: process.env.PROMON_CLUSTER_SHIM || clusterShim
+    PUMON_NODE_SUPPORT_LOADER: process.env.PUMON_NODE_SUPPORT_LOADER || loader,
+    PUMON_CLUSTER_SHIM: process.env.PUMON_CLUSTER_SHIM || clusterShim
   }
 });
 
@@ -42,24 +42,24 @@ process.exit(result.status ?? 1);
 async function ensureReleaseBinary() {
   const target = targetTriple();
   const cacheDir = path.join(cacheRoot(), packageJson.version, target);
-  const binary = path.join(cacheDir, process.platform === "win32" ? "promon.exe" : "promon");
+  const binary = path.join(cacheDir, process.platform === "win32" ? "pumon.exe" : "pumon");
   if (existsSync(binary)) return binary;
 
   mkdirSync(cacheDir, { recursive: true });
-  const archiveName = `promon-v${packageJson.version}-${target}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
-  const repo = process.env.PROMON_GITHUB_REPOSITORY || "backrunner/promon";
+  const archiveName = `pumon-v${packageJson.version}-${target}.${process.platform === "win32" ? "zip" : "tar.gz"}`;
+  const repo = process.env.PUMON_GITHUB_REPOSITORY || "backrunner/pumon";
   const base = `https://github.com/${repo}/releases/download/v${packageJson.version}`;
-  const tmp = await mkdtemp(path.join(tmpdir(), "promon-download-"));
+  const tmp = await mkdtemp(path.join(tmpdir(), "pumon-download-"));
   const archive = path.join(tmp, archiveName);
   await download(`${base}/${archiveName}`, archive);
-  await verifyChecksum(`${base}/promon-v${packageJson.version}-checksums.txt`, archiveName, archive);
+  await verifyChecksum(`${base}/pumon-v${packageJson.version}-checksums.txt`, archiveName, archive);
 
   if (process.platform === "win32") {
     const unzip = spawnSync("powershell", ["-NoProfile", "-Command", `Expand-Archive -Force '${archive}' '${tmp}'`], { stdio: "inherit" });
-    if (unzip.status !== 0) throw new Error("failed to extract Promon archive");
+    if (unzip.status !== 0) throw new Error("failed to extract Pumon archive");
   } else {
     const tar = spawnSync("tar", ["-xzf", archive, "-C", tmp], { stdio: "inherit" });
-    if (tar.status !== 0) throw new Error("failed to extract Promon archive");
+    if (tar.status !== 0) throw new Error("failed to extract Pumon archive");
   }
 
   const extracted = findExtractedBinary(tmp);
@@ -78,16 +78,16 @@ function targetTriple() {
 }
 
 function cacheRoot() {
-  if (process.env.PROMON_CACHE_DIR) return process.env.PROMON_CACHE_DIR;
-  if (process.platform === "darwin") return path.join(process.env.HOME || tmpdir(), "Library", "Caches", "promon", "bin");
-  if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA || tmpdir(), "promon", "Cache", "bin");
-  return path.join(process.env.XDG_CACHE_HOME || path.join(process.env.HOME || tmpdir(), ".cache"), "promon", "bin");
+  if (process.env.PUMON_CACHE_DIR) return process.env.PUMON_CACHE_DIR;
+  if (process.platform === "darwin") return path.join(process.env.HOME || tmpdir(), "Library", "Caches", "pumon", "bin");
+  if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA || tmpdir(), "pumon", "Cache", "bin");
+  return path.join(process.env.XDG_CACHE_HOME || path.join(process.env.HOME || tmpdir(), ".cache"), "pumon", "bin");
 }
 
 function resolveAsset(preferred, fallback) {
   if (existsSync(preferred)) return preferred;
   if (existsSync(fallback)) return fallback;
-  throw new Error(`required Promon runtime asset is missing: ${preferred}`);
+  throw new Error(`required Pumon runtime asset is missing: ${preferred}`);
 }
 
 function download(url, dest) {
@@ -123,10 +123,10 @@ async function verifyChecksum(url, archiveName, archive) {
 
 function findExtractedBinary(root) {
   const candidates = [
-    path.join(root, process.platform === "win32" ? "promon.exe" : "promon"),
-    path.join(root, "bin", process.platform === "win32" ? "promon.exe" : "promon")
+    path.join(root, process.platform === "win32" ? "pumon.exe" : "pumon"),
+    path.join(root, "bin", process.platform === "win32" ? "pumon.exe" : "pumon")
   ];
   const found = candidates.find(existsSync);
-  if (!found) throw new Error("Promon binary missing from release archive");
+  if (!found) throw new Error("Pumon binary missing from release archive");
   return found;
 }

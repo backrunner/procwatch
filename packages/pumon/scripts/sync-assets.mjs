@@ -33,4 +33,4 @@ await Promise.all(
   })
 );
 
-console.log("Synced Promon runtime assets into vendor/");
+console.log("Synced Pumon runtime assets into vendor/");

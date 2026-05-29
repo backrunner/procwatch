@@ -5,4 +5,3 @@ export function fail(message) {
     process.stderr.write(`${JSON.stringify({ error: message })}\n`);
     process.exit(1);
 }
-

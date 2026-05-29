@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 function help() {
-  console.log("usage: promon-cluster-shim '<json-spec>'");
+  console.log("usage: pumon-cluster-shim '<json-spec>'");
 }
 
 const raw = process.argv[2];
@@ -24,7 +24,7 @@ let controlServer;
 const controlToken = spec.controlToken || randomBytes(32).toString("hex");
 
 function workerEnv(index) {
-  return { ...process.env, ...(worker.env || {}), PROMON_WORKER_ID: String(index) };
+  return { ...(worker.env || {}), ...process.env, PUMON_WORKER_ID: String(index) };
 }
 
 function delay(ms) {
@@ -207,29 +207,29 @@ if ((worker.interpreter || "node") === "node") {
       env: workerEnv(index),
       stdio: "inherit"
     });
-    child.promonIndex = index;
-    child.promonStopping = false;
-    child.promonExited = false;
+    child.pumonIndex = index;
+    child.pumonStopping = false;
+    child.pumonExited = false;
     children.add(child);
     child.on("exit", () => {
-      child.promonExited = true;
+      child.pumonExited = true;
       children.delete(child);
-      if (!shuttingDown && !child.promonStopping && children.size < targetInstances) start(index);
+      if (!shuttingDown && !child.pumonStopping && children.size < targetInstances) start(index);
     });
     return child;
   }
 
   function stopChild(child) {
-    child.promonStopping = true;
+    child.pumonStopping = true;
     child.kill("SIGTERM");
     setTimeout(() => {
-      if (!child.promonExited) child.kill("SIGKILL");
+      if (!child.pumonExited) child.kill("SIGKILL");
     }, 5000).unref();
   }
 
   function waitChildExit(child) {
     return new Promise((resolve) => {
-      if (!child || child.promonExited) {
+      if (!child || child.pumonExited) {
         resolve();
         return;
       }
@@ -252,7 +252,7 @@ if ((worker.interpreter || "node") === "node") {
   async function reloadWorkers() {
     const current = [...children];
     for (const child of current) {
-      start(child.promonIndex);
+      start(child.pumonIndex);
       await delay(100);
       stopChild(child);
       await waitChildExit(child);

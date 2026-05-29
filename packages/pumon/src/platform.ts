@@ -2,7 +2,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 
 export function binaryName(platform = process.platform): string {
-  return platform === "win32" ? "promon.exe" : "promon";
+  return platform === "win32" ? "pumon.exe" : "pumon";
 }
 
 export function targetPlatform(): string {
@@ -21,21 +21,21 @@ export function targetTriple(
 }
 
 export function cacheRoot(env = process.env): string {
-  if (env.PROMON_CACHE_DIR) return env.PROMON_CACHE_DIR;
+  if (env.PUMON_CACHE_DIR) return env.PUMON_CACHE_DIR;
   if (process.platform === "darwin") {
-    return path.join(env.HOME || tmpdir(), "Library", "Caches", "promon", "bin");
+    return path.join(env.HOME || tmpdir(), "Library", "Caches", "pumon", "bin");
   }
   if (process.platform === "win32") {
-    return path.join(env.LOCALAPPDATA || tmpdir(), "promon", "Cache", "bin");
+    return path.join(env.LOCALAPPDATA || tmpdir(), "pumon", "Cache", "bin");
   }
   return path.join(
     env.XDG_CACHE_HOME || path.join(env.HOME || tmpdir(), ".cache"),
-    "promon",
+    "pumon",
     "bin"
   );
 }
 
 export function archiveFileName(version: string, triple = targetTriple()): string {
   const ext = process.platform === "win32" ? "zip" : "tar.gz";
-  return `promon-v${version}-${triple}.${ext}`;
+  return `pumon-v${version}-${triple}.${ext}`;
 }

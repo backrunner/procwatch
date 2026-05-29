@@ -16,7 +16,7 @@ export interface DownloadBinaryOptions {
 
 export async function downloadBinary(options: DownloadBinaryOptions): Promise<string> {
   const version = options.version;
-  const repository = options.repository || process.env.PROMON_GITHUB_REPOSITORY || "backrunner/promon";
+  const repository = options.repository || process.env.PUMON_GITHUB_REPOSITORY || "backrunner/pumon";
   const triple = targetTriple();
   const root = options.cacheDir || cacheRoot();
   const binaryPath = path.join(root, version, triple, binaryName());
@@ -25,13 +25,13 @@ export async function downloadBinary(options: DownloadBinaryOptions): Promise<st
   mkdirSync(path.dirname(binaryPath), { recursive: true });
   const archive = archiveFileName(version, triple);
   const base = `https://github.com/${repository}/releases/download/v${version}`;
-  const tempDir = await mkdtemp(path.join(tmpdir(), "promon-download-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "pumon-download-"));
   const archivePath = path.join(tempDir, archive);
 
   try {
     await download(`${base}/${archive}`, archivePath);
     await verifyChecksum(
-      `${base}/promon-v${version}-checksums.txt`,
+      `${base}/pumon-v${version}-checksums.txt`,
       archive,
       archivePath
     );
@@ -56,7 +56,7 @@ function extractArchive(archivePath: string, outputDir: string): void {
       { stdio: "inherit" }
     );
     if (result.status !== 0) {
-      throw new Error("failed to extract Promon archive");
+      throw new Error("failed to extract Pumon archive");
     }
     return;
   }
@@ -65,7 +65,7 @@ function extractArchive(archivePath: string, outputDir: string): void {
     stdio: "inherit"
   });
   if (result.status !== 0) {
-    throw new Error("failed to extract Promon archive");
+    throw new Error("failed to extract Pumon archive");
   }
 }
 
@@ -121,7 +121,7 @@ function findExtractedBinary(root: string): string {
   const candidates = [path.join(root, file), path.join(root, "bin", file)];
   const found = candidates.find(existsSync);
   if (!found) {
-    throw new Error("Promon binary missing from release archive");
+    throw new Error("Pumon binary missing from release archive");
   }
   return found;
 }

@@ -1,5 +1,5 @@
 {
-  "name": "@promon/node-support",
+  "name": "@pumon/node-support",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "test": "node dist/config-loader.js --help"
   },
   "devDependencies": {
+    "@types/node": "^24.12.4",
     "typescript": "^5.9.3"
   }
 }
-

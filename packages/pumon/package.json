@@ -1,5 +1,5 @@
 {
-  "name": "promon",
+  "name": "pumon",
   "version": "0.1.0",
   "private": false,
   "files": [
@@ -9,12 +9,12 @@
     "vendor"
   ],
   "bin": {
-    "promon": "bin/promon.js"
+    "pumon": "bin/pumon.js"
   },
   "scripts": {
     "prepack": "node scripts/sync-assets.mjs",
     "install": "node scripts/install.js",
-    "test": "node scripts/sync-assets.mjs && node bin/promon.js --version"
+    "test": "node scripts/sync-assets.mjs && node bin/pumon.js --version"
   },
   "type": "module"
 }

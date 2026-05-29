@@ -1,5 +1,5 @@
 {
-  "name": "@promon/cluster-shim",
+  "name": "@pumon/cluster-shim",
   "version": "0.1.0",
   "private": true,
   "type": "module",
