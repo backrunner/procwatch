@@ -1,5 +1,6 @@
 import cluster from "node:cluster";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -20,6 +21,7 @@ const worker = spec.worker;
 let targetInstances = spec.instances === "max" ? os.availableParallelism() : Math.max(1, Number(spec.instances || 1));
 let shuttingDown = false;
 let controlServer;
+const controlToken = spec.controlToken || randomBytes(32).toString("hex");
 
 function workerEnv(index) {
   return { ...process.env, ...(worker.env || {}), PROMON_WORKER_ID: String(index) };
@@ -57,7 +59,7 @@ function startControlServer(handler) {
   controlServer.listen(0, "127.0.0.1", () => {
     const address = controlServer.address();
     const tempPath = `${spec.controlPath}.${process.pid}.tmp`;
-    writeFileSync(tempPath, JSON.stringify({ host: address.address, port: address.port, pid: process.pid }));
+    writeFileSync(tempPath, JSON.stringify({ host: address.address, port: address.port, pid: process.pid, token: controlToken }));
     renameSync(tempPath, spec.controlPath);
   });
 
@@ -67,6 +69,9 @@ function startControlServer(handler) {
 async function handleControlLine(handler, line, socket) {
   try {
     const request = JSON.parse(line);
+    if (request.token !== controlToken) {
+      throw new Error("invalid cluster control token");
+    }
     const payload = await handler(request);
     socket.write(`${JSON.stringify({ ok: true, ...payload })}\n`);
   } catch (error) {

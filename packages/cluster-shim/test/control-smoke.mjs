@@ -67,7 +67,7 @@ function sendControl(address, request) {
     }, 5000);
     socket.setEncoding("utf8");
     socket.on("connect", () => {
-      socket.write(`${JSON.stringify(request)}\n`);
+      socket.write(`${JSON.stringify({ ...request, token: address.token })}\n`);
     });
     socket.on("data", (chunk) => {
       buffer += chunk;

@@ -43,11 +43,24 @@ enum ClusterControlRequest {
     Scale { instances: usize },
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClusterControlWireRequest {
+    Reload {
+        token: Option<String>,
+    },
+    Scale {
+        instances: usize,
+        token: Option<String>,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 struct ClusterControlAddress {
     host: String,
     port: u16,
     pid: Option<u32>,
+    token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -761,9 +774,10 @@ async fn cluster_control(
     };
 
     let mut reader = BufReader::new(stream);
+    let wire_request = cluster_control_wire_request(request, address.token.clone());
     let request = format!(
         "{}\n",
-        serde_json::to_string(&request).map_err(PromonError::Json)?
+        serde_json::to_string(&wire_request).map_err(PromonError::Json)?
     );
     match timeout(
         Duration::from_secs(3),
@@ -802,6 +816,18 @@ async fn cluster_control(
         Err(PromonError::Process(response.error.unwrap_or_else(|| {
             format!("cluster control request failed for {}", app.name)
         })))
+    }
+}
+
+fn cluster_control_wire_request(
+    request: ClusterControlRequest,
+    token: Option<String>,
+) -> ClusterControlWireRequest {
+    match request {
+        ClusterControlRequest::Reload => ClusterControlWireRequest::Reload { token },
+        ClusterControlRequest::Scale { instances } => {
+            ClusterControlWireRequest::Scale { instances, token }
+        }
     }
 }
 

@@ -22,6 +22,6 @@ Implemented MVP commands:
 
 When the daemon is reachable, normal management commands such as `start`, `stop`, `restart`, `reload`, `scale`, `status`, and `list` route through daemon IPC and update daemon desired state where applicable. If no daemon is reachable, they fall back to direct local process management.
 
-For cluster apps, `scale` and `reload` use the cluster shim control channel when the app is already running, so the cluster master process can stay alive while workers are resized or replaced. Non-cluster apps still use the supervisor restart path.
+For cluster apps, `scale` and `reload` use the cluster shim control channel when the app is already running, so the cluster master process can stay alive while workers are resized or replaced. The control channel is loopback-only, pid-checked, and token-checked through the local control address file. Non-cluster apps still use the supervisor restart path.
 
 `promon watch` honors `watch.paths`, `watch.include`, `watch.ignore`, `ignore_watch`, `watch.debounce_ms`, and `watch.reload`. If no app has watch enabled, the explicit `watch` command watches all resolved apps.
