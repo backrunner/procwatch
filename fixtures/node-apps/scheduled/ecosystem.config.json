@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "name": "scheduled-fixture",
+      "script": "server.js",
+      "cwd": ".",
+      "cron_restart": "2s"
+    }
+  ]
+}

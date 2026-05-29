@@ -13,6 +13,7 @@ PROMON_BIN="${PROMON_BIN:-target/debug/promon}"
 "$PROMON_BIN" validate fixtures/node-apps/ts-prebuilt/ecosystem.config.json
 "$PROMON_BIN" validate fixtures/node-apps/package-script/ecosystem.config.js
 "$PROMON_BIN" validate fixtures/node-apps/crash/ecosystem.config.json
+"$PROMON_BIN" validate fixtures/node-apps/scheduled/ecosystem.config.json
 "$PROMON_BIN" service status
 
 tmp_home="$(mktemp -d /tmp/promon-smoke.XXXXXX)"
@@ -54,6 +55,12 @@ PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon start examples/basic/ecosystem.conf
 sleep 1
 restored_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
 node -e 'const r = JSON.parse(process.argv[1]); const names = new Set(r.payload.processes.map((p) => p.name)); if (!names.has("basic-js") || !names.has("package-script")) process.exit(1);' "$restored_json"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" stop all
+PROMON_HOME="$tmp_home" "$PROMON_BIN" start fixtures/node-apps/scheduled/ecosystem.config.json
+scheduled_first="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+sleep 4
+scheduled_second="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const first = JSON.parse(process.argv[1]).payload.processes.find((p) => p.name === "scheduled-fixture"); const second = JSON.parse(process.argv[2]).payload.processes.find((p) => p.name === "scheduled-fixture"); if (!first || !second || first.pid === second.pid) process.exit(1);' "$scheduled_first" "$scheduled_second"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop all
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop

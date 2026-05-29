@@ -8,8 +8,8 @@ use promon_logging::tail_file;
 use promon_node_support::validate_runtime;
 use promon_platform::{find_program, promon_home};
 use promon_process::{
-    list_apps, load_desired_apps, restart_app, run_app_foreground, save_desired_apps, start_app,
-    stop_all, stop_app,
+    list_apps, load_desired_apps, policy_restart_reason, restart_app, run_app_foreground,
+    save_desired_apps, start_app, stop_all, stop_app, validate_restart_policy,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -179,11 +179,17 @@ async fn init(output: PathBuf, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn validate_app(app: &ResolvedAppSpec) -> Result<()> {
+    validate_runtime(app)?;
+    validate_restart_policy(app)?;
+    Ok(())
+}
+
 async fn validate(config: Option<PathBuf>, json: bool) -> Result<()> {
     let config = resolve_config(config)?;
     let apps = load_config(&config).await?;
     for app in &apps {
-        validate_runtime(app)?;
+        validate_app(app)?;
     }
 
     if json {
@@ -236,7 +242,7 @@ async fn start(target: Option<PathBuf>, wait: bool, json: bool) -> Result<()> {
             }
         }
         for app in apps {
-            validate_runtime(&app)?;
+            validate_app(&app)?;
             run_app_foreground(&app).await?;
         }
         return Ok(());
@@ -249,7 +255,7 @@ async fn start(target: Option<PathBuf>, wait: bool, json: bool) -> Result<()> {
 
     let mut started = Vec::new();
     for app in apps {
-        validate_runtime(&app)?;
+        validate_app(&app)?;
         started.push(start_app(&app).await?);
     }
 
@@ -304,7 +310,7 @@ async fn restart(target: Option<PathBuf>, json: bool) -> Result<()> {
 
     let mut restarted = Vec::new();
     for app in apps {
-        validate_runtime(&app)?;
+        validate_app(&app)?;
         restarted.push(restart_app(&app).await?);
     }
 
@@ -332,7 +338,7 @@ async fn scale(target: PathBuf, instances: u16, json: bool) -> Result<()> {
 
     let mut scaled = Vec::new();
     for app in apps {
-        validate_runtime(&app)?;
+        validate_app(&app)?;
         scaled.push(restart_app(&app).await?);
     }
 
@@ -617,7 +623,7 @@ async fn daemon_run(config: PathBuf) -> Result<()> {
     let mut apps = load_desired_apps().await?;
     merge_app_specs(&mut apps, config_apps);
     for app in &apps {
-        validate_runtime(app)?;
+        validate_app(app)?;
         start_app(app).await?;
     }
     save_desired_apps(&apps).await?;
@@ -631,13 +637,36 @@ async fn daemon_run(config: PathBuf) -> Result<()> {
         tokio::select! {
             _ = tick.tick() => {
                 let apps = desired.lock().await.clone();
+                let processes = match list_apps().await {
+                    Ok(processes) => processes,
+                    Err(error) => {
+                        eprintln!("failed to list managed apps during daemon reconciliation: {error}");
+                        continue;
+                    }
+                };
                 for app in &apps {
-                    let processes = list_apps().await?;
-                    let alive = processes.iter().any(|process| {
-                        process.name == app.name && matches!(process.status, promon_core::ProcessStatus::Running)
-                    });
-                    if !alive && app.restart.autorestart {
-                        let _ = start_app(app).await;
+                    let process = processes.iter().find(|process| process.name == app.name);
+                    match process {
+                        Some(process) if matches!(process.status, promon_core::ProcessStatus::Running) => {
+                            match policy_restart_reason(app, process) {
+                                Ok(Some(reason)) => {
+                                    eprintln!("restarting {}: {reason}", app.name);
+                                    if let Err(error) = restart_app(app).await {
+                                        eprintln!("failed to restart {}: {error}", app.name);
+                                    }
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    eprintln!("failed to evaluate restart policy for {}: {error}", app.name);
+                                }
+                            }
+                        }
+                        _ if app.restart.autorestart => {
+                            if let Err(error) = start_app(app).await {
+                                eprintln!("failed to start {} during daemon reconciliation: {error}", app.name);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -893,7 +922,7 @@ async fn start_desired_apps(
 ) -> IpcResponse {
     let mut started = Vec::new();
     for app in &apps {
-        if let Err(error) = validate_runtime(app) {
+        if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
         match start_app(app).await {
@@ -914,7 +943,7 @@ async fn restart_desired_apps(
 ) -> IpcResponse {
     let mut restarted = Vec::new();
     for app in &apps {
-        if let Err(error) = validate_runtime(app) {
+        if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
         match restart_app(app).await {
@@ -1252,7 +1281,7 @@ async fn run_status(program: &str, args: &[&str]) -> Result<()> {
 async fn watch(target: Option<PathBuf>, interval_ms: u64, json: bool) -> Result<()> {
     let apps = resolve_apps(target).await?;
     for app in &apps {
-        validate_runtime(app)?;
+        validate_app(app)?;
         start_app(app).await?;
     }
     if json {
