@@ -40,11 +40,14 @@ PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon start examples/basic/ecosystem.conf
 sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon status
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon ping
+ping_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json daemon ping)"
+node -e 'const r = JSON.parse(process.argv[1]); if (r.version !== 1 || !r.request_id || !r.ok || r.payload.pong !== true) process.exit(1);' "$ping_json"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon list
 PROMON_HOME="$tmp_home" "$PROMON_BIN" list
 PROMON_HOME="$tmp_home" "$PROMON_BIN" restart examples/basic/ecosystem.config.json
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json
+PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop
 PROMON_HOME="$tmp_home" "$PROMON_BIN" list
 

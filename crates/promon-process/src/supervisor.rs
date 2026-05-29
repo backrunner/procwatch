@@ -6,7 +6,7 @@ use promon_core::{ManagedProcess, ProcessStatus, PromonError, PromonResult, Reso
 use promon_logging::ensure_log_paths;
 use promon_node_support::resolve_runtime_command;
 use promon_platform::{
-    force_kill_process, is_process_alive, logs_dir, process_command, terminate_process,
+    force_kill_process_tree, is_process_alive, logs_dir, process_command, terminate_process_tree,
 };
 use tokio::fs::OpenOptions;
 use tokio::process::Command;
@@ -52,6 +52,7 @@ pub async fn start_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    configure_process_group(&mut child);
 
     let child = child.spawn().map_err(PromonError::Io)?;
     let pid = child
@@ -96,15 +97,16 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
             .into_std()
             .await;
 
-        let mut child = Command::new(&command.program)
+        let mut command_builder = Command::new(&command.program);
+        command_builder
             .args(&command.args)
             .current_dir(&command.cwd)
             .envs(&command.env)
             .stdin(Stdio::null())
             .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .map_err(PromonError::Io)?;
+            .stderr(Stdio::from(stderr));
+        configure_process_group(&mut command_builder);
+        let mut child = command_builder.spawn().map_err(PromonError::Io)?;
         let pid = child
             .id()
             .ok_or_else(|| PromonError::Process(format!("failed to read pid for {}", app.name)))?;
@@ -127,10 +129,12 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
 
             if let Some(limit) = memory_limit {
                 if process_memory_bytes(pid) > limit {
-                    terminate_process(pid).await.map_err(PromonError::Io)?;
+                    terminate_process_tree(pid).await.map_err(PromonError::Io)?;
                     sleep(Duration::from_millis(500)).await;
                     if is_process_alive(pid) {
-                        force_kill_process(pid).await.map_err(PromonError::Io)?;
+                        force_kill_process_tree(pid)
+                            .await
+                            .map_err(PromonError::Io)?;
                     }
                     break child.wait().await.map_err(PromonError::Io)?;
                 }
@@ -138,10 +142,12 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
 
             if let Some(interval) = interval_restart {
                 if started.elapsed() >= interval {
-                    terminate_process(pid).await.map_err(PromonError::Io)?;
+                    terminate_process_tree(pid).await.map_err(PromonError::Io)?;
                     sleep(Duration::from_millis(500)).await;
                     if is_process_alive(pid) {
-                        force_kill_process(pid).await.map_err(PromonError::Io)?;
+                        force_kill_process_tree(pid)
+                            .await
+                            .map_err(PromonError::Io)?;
                     }
                     break child.wait().await.map_err(PromonError::Io)?;
                 }
@@ -333,12 +339,12 @@ pub async fn stop_app(name: &str) -> PromonResult<Option<ManagedProcess>> {
     };
 
     if is_managed_process_alive(&process) {
-        terminate_process(process.pid)
+        terminate_process_tree(process.pid)
             .await
             .map_err(PromonError::Io)?;
         sleep(Duration::from_millis(700)).await;
         if is_managed_process_alive(&process) {
-            force_kill_process(process.pid)
+            force_kill_process_tree(process.pid)
                 .await
                 .map_err(PromonError::Io)?;
         }
@@ -352,18 +358,25 @@ pub async fn stop_all() -> PromonResult<Vec<ManagedProcess>> {
     save_processes(&[]).await?;
     for process in &processes {
         if is_managed_process_alive(process) {
-            terminate_process(process.pid)
+            terminate_process_tree(process.pid)
                 .await
                 .map_err(PromonError::Io)?;
             sleep(Duration::from_millis(700)).await;
             if is_managed_process_alive(process) {
-                force_kill_process(process.pid)
+                force_kill_process_tree(process.pid)
                     .await
                     .map_err(PromonError::Io)?;
             }
         }
     }
     Ok(processes)
+}
+
+fn configure_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
 }
 
 fn is_managed_process_alive(process: &ManagedProcess) -> bool {

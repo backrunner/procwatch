@@ -128,3 +128,49 @@ pub async fn force_kill_process(pid: u32) -> std::io::Result<()> {
 
     Ok(())
 }
+
+pub async fn terminate_process_tree(pid: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let group = format!("-{pid}");
+        let status = tokio::process::Command::new("kill")
+            .args(["-TERM", &group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+        if !status.success() {
+            terminate_process(pid).await?;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        terminate_process(pid).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn force_kill_process_tree(pid: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let group = format!("-{pid}");
+        let status = tokio::process::Command::new("kill")
+            .args(["-9", &group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+        if !status.success() {
+            force_kill_process(pid).await?;
+        }
+    }
+
+    #[cfg(windows)]
+    {
+        force_kill_process(pid).await?;
+    }
+
+    Ok(())
+}

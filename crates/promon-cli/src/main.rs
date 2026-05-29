@@ -13,6 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 type DesiredApps = Arc<Mutex<Vec<ResolvedAppSpec>>>;
+const IPC_VERSION: u16 = 1;
 
 #[derive(Debug, Parser)]
 #[command(name = "promon", version, about = "Rust-first Node.js process manager")]
@@ -124,6 +125,13 @@ enum DaemonCommand {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct IpcEnvelope {
+    version: u16,
+    request_id: String,
+    request: IpcRequest,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum IpcRequest {
     Ping,
@@ -137,6 +145,8 @@ enum IpcRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct IpcResponse {
+    version: u16,
+    request_id: String,
     ok: bool,
     payload: serde_json::Value,
     error: Option<String>,
@@ -512,16 +522,28 @@ async fn daemon_start(config: Option<PathBuf>, json: bool) -> Result<()> {
 
 async fn daemon_stop(json: bool) -> Result<()> {
     let pid_path = promon_home().join("daemon").join("daemon.pid");
-    let pid = tokio::fs::read_to_string(&pid_path)
-        .await?
-        .trim()
-        .parse::<u32>()?;
+    let Some(pid) = daemon_pid().await else {
+        let _ = tokio::fs::remove_file(&pid_path).await;
+        cleanup_ipc_file().await;
+        if json {
+            print_json(serde_json::json!({ "already_stopped": true }))?;
+        } else {
+            println!("promon daemon not started");
+        }
+        return Ok(());
+    };
     let _ = send_ipc(IpcRequest::Stop {
         name: "all".to_string(),
     })
     .await;
     promon_platform::terminate_process(pid).await?;
+    wait_for_process_exit(pid, 30, std::time::Duration::from_millis(100)).await;
+    if promon_platform::is_process_alive(pid) {
+        promon_platform::force_kill_process(pid).await?;
+        wait_for_process_exit(pid, 10, std::time::Duration::from_millis(100)).await;
+    }
     let _ = tokio::fs::remove_file(&pid_path).await;
+    cleanup_ipc_file().await;
     if json {
         print_json(serde_json::json!({ "stopped": pid }))?;
     } else {
@@ -569,6 +591,19 @@ async fn wait_for_daemon_ready() -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     anyhow::bail!("daemon did not become ready within 5 seconds")
+}
+
+async fn wait_for_process_exit(pid: u32, attempts: usize, interval: std::time::Duration) {
+    for _ in 0..attempts {
+        if !promon_platform::is_process_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+async fn cleanup_ipc_file() {
+    let _ = tokio::fs::remove_file(ipc_path()).await;
 }
 
 async fn daemon_ipc(request: IpcRequest, json: bool) -> Result<()> {
@@ -708,71 +743,112 @@ async fn connect_ipc() -> Result<IpcStream> {
 
 async fn send_ipc(request: IpcRequest) -> Result<IpcResponse> {
     let mut stream = connect_ipc().await?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let request_id = format!("{}-{}", std::process::id(), timestamp);
+    let envelope = IpcEnvelope {
+        version: IPC_VERSION,
+        request_id,
+        request,
+    };
     stream
-        .write_all(format!("{}\n", serde_json::to_string(&request)?).as_bytes())
+        .write_all(format!("{}\n", serde_json::to_string(&envelope)?).as_bytes())
         .await?;
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).await?;
-    Ok(serde_json::from_str(&line)?)
+    if reader.read_line(&mut line).await? == 0 {
+        anyhow::bail!("daemon closed IPC connection without a response");
+    }
+    let response: IpcResponse = serde_json::from_str(&line)?;
+    if response.version != IPC_VERSION {
+        anyhow::bail!(
+            "daemon IPC version mismatch: client={} daemon={}",
+            IPC_VERSION,
+            response.version
+        );
+    }
+    Ok(response)
 }
 
 async fn handle_ipc(stream: IpcStream, desired: DesiredApps) -> Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
-    let request: IpcRequest = serde_json::from_str(&line)?;
-    let response = match request {
-        IpcRequest::Ping => IpcResponse {
-            ok: true,
-            payload: serde_json::json!({ "pong": true }),
-            error: None,
-        },
-        IpcRequest::List => match list_apps().await {
-            Ok(processes) => IpcResponse {
-                ok: true,
-                payload: serde_json::json!({ "processes": processes }),
-                error: None,
-            },
-            Err(error) => error_response(error.to_string()),
-        },
-        IpcRequest::Stop { name } => {
-            if name == "all" {
-                match stop_all().await {
-                    Ok(processes) => {
-                        desired.lock().await.clear();
-                        IpcResponse {
-                            ok: true,
-                            payload: serde_json::json!({ "stopped": processes }),
-                            error: None,
-                        }
-                    }
-                    Err(error) => error_response(error.to_string()),
+    let fallback_request_id = serde_json::from_str::<serde_json::Value>(&line)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("request_id")
+                .and_then(|request_id| request_id.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let envelope: IpcEnvelope = match serde_json::from_str(&line) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            let response =
+                error_response(fallback_request_id, format!("invalid IPC request: {error}"));
+            let mut stream = reader.into_inner();
+            stream
+                .write_all(format!("{}\n", serde_json::to_string(&response)?).as_bytes())
+                .await?;
+            return Ok(());
+        }
+    };
+    let request_id = envelope.request_id;
+    let response = if envelope.version != IPC_VERSION {
+        error_response(
+            request_id,
+            format!(
+                "unsupported IPC version {}; expected {}",
+                envelope.version, IPC_VERSION
+            ),
+        )
+    } else {
+        match envelope.request {
+            IpcRequest::Ping => ok_response(request_id, serde_json::json!({ "pong": true })),
+            IpcRequest::List => match list_apps().await {
+                Ok(processes) => {
+                    ok_response(request_id, serde_json::json!({ "processes": processes }))
                 }
-            } else {
-                match stop_app(&name).await {
-                    Ok(process) => {
-                        desired.lock().await.retain(|app| app.name != name);
-                        IpcResponse {
-                            ok: true,
-                            payload: serde_json::json!({ "stopped": process }),
-                            error: None,
+                Err(error) => error_response(request_id, error.to_string()),
+            },
+            IpcRequest::Stop { name } => {
+                if name == "all" {
+                    match stop_all().await {
+                        Ok(processes) => {
+                            desired.lock().await.clear();
+                            ok_response(request_id, serde_json::json!({ "stopped": processes }))
                         }
+                        Err(error) => error_response(request_id, error.to_string()),
                     }
-                    Err(error) => error_response(error.to_string()),
+                } else {
+                    match stop_app(&name).await {
+                        Ok(process) => {
+                            desired.lock().await.retain(|app| app.name != name);
+                            ok_response(request_id, serde_json::json!({ "stopped": process }))
+                        }
+                        Err(error) => error_response(request_id, error.to_string()),
+                    }
                 }
             }
+            IpcRequest::Start { config } => match load_config(&config).await {
+                Ok(loaded) => start_desired_apps(request_id, loaded, desired.clone()).await,
+                Err(error) => error_response(request_id, error.to_string()),
+            },
+            IpcRequest::StartApps { apps } => {
+                start_desired_apps(request_id, apps, desired.clone()).await
+            }
+            IpcRequest::Restart { config } => match load_config(&config).await {
+                Ok(loaded) => restart_desired_apps(request_id, loaded, desired.clone()).await,
+                Err(error) => error_response(request_id, error.to_string()),
+            },
+            IpcRequest::RestartApps { apps } => {
+                restart_desired_apps(request_id, apps, desired.clone()).await
+            }
         }
-        IpcRequest::Start { config } => match load_config(&config).await {
-            Ok(loaded) => start_desired_apps(loaded, desired.clone()).await,
-            Err(error) => error_response(error.to_string()),
-        },
-        IpcRequest::StartApps { apps } => start_desired_apps(apps, desired.clone()).await,
-        IpcRequest::Restart { config } => match load_config(&config).await {
-            Ok(loaded) => restart_desired_apps(loaded, desired.clone()).await,
-            Err(error) => error_response(error.to_string()),
-        },
-        IpcRequest::RestartApps { apps } => restart_desired_apps(apps, desired.clone()).await,
     };
 
     let mut stream = reader.into_inner();
@@ -782,40 +858,50 @@ async fn handle_ipc(stream: IpcStream, desired: DesiredApps) -> Result<()> {
     Ok(())
 }
 
-async fn start_desired_apps(apps: Vec<ResolvedAppSpec>, desired: DesiredApps) -> IpcResponse {
+async fn start_desired_apps(
+    request_id: String,
+    apps: Vec<ResolvedAppSpec>,
+    desired: DesiredApps,
+) -> IpcResponse {
     let mut started = Vec::new();
     for app in &apps {
         if let Err(error) = validate_runtime(app) {
-            return error_response(error.to_string());
+            return error_response(request_id, error.to_string());
         }
         match start_app(app).await {
             Ok(process) => started.push(process),
-            Err(error) => return error_response(error.to_string()),
+            Err(error) => return error_response(request_id, error.to_string()),
         }
     }
     merge_desired_apps(desired, apps).await;
-    IpcResponse {
-        ok: true,
-        payload: serde_json::json!({ "started": started }),
-        error: None,
-    }
+    ok_response(request_id, serde_json::json!({ "started": started }))
 }
 
-async fn restart_desired_apps(apps: Vec<ResolvedAppSpec>, desired: DesiredApps) -> IpcResponse {
+async fn restart_desired_apps(
+    request_id: String,
+    apps: Vec<ResolvedAppSpec>,
+    desired: DesiredApps,
+) -> IpcResponse {
     let mut restarted = Vec::new();
     for app in &apps {
         if let Err(error) = validate_runtime(app) {
-            return error_response(error.to_string());
+            return error_response(request_id, error.to_string());
         }
         match restart_app(app).await {
             Ok(process) => restarted.push(process),
-            Err(error) => return error_response(error.to_string()),
+            Err(error) => return error_response(request_id, error.to_string()),
         }
     }
     merge_desired_apps(desired, apps).await;
+    ok_response(request_id, serde_json::json!({ "restarted": restarted }))
+}
+
+fn ok_response(request_id: String, payload: serde_json::Value) -> IpcResponse {
     IpcResponse {
+        version: IPC_VERSION,
+        request_id,
         ok: true,
-        payload: serde_json::json!({ "restarted": restarted }),
+        payload,
         error: None,
     }
 }
@@ -828,8 +914,10 @@ async fn merge_desired_apps(desired: DesiredApps, apps: Vec<ResolvedAppSpec>) {
     }
 }
 
-fn error_response(error: String) -> IpcResponse {
+fn error_response(request_id: String, error: String) -> IpcResponse {
     IpcResponse {
+        version: IPC_VERSION,
+        request_id,
         ok: false,
         payload: serde_json::Value::Null,
         error: Some(error),
@@ -1221,9 +1309,23 @@ fn print_json(value: serde_json::Value) -> Result<()> {
 }
 
 async fn try_daemon_request(request: IpcRequest) -> Result<Option<IpcResponse>> {
+    if !ipc_path().exists() {
+        return Ok(None);
+    }
+
     match send_ipc(request).await {
         Ok(response) => Ok(Some(response)),
-        Err(_) => Ok(None),
+        Err(error) => {
+            let daemon_running = daemon_pid()
+                .await
+                .map(promon_platform::is_process_alive)
+                .unwrap_or(false);
+            if daemon_running {
+                Err(error).context("daemon IPC request failed while daemon pid is still alive")
+            } else {
+                Ok(None)
+            }
+        }
     }
 }
 
