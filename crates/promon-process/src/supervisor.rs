@@ -5,19 +5,30 @@ use chrono::{DateTime, Datelike, Local, Timelike, Utc};
 use promon_core::{
     ExecMode, ManagedProcess, ProcessStatus, PromonError, PromonResult, ResolvedAppSpec,
 };
-use promon_logging::ensure_log_paths;
+use promon_logging::{ensure_log_paths, spawn_rotating_log_writer};
 use promon_node_support::{cluster_control_path, resolve_instances, resolve_runtime_command};
 use promon_platform::{
     force_kill_process_tree, is_process_alive, logs_dir, process_command, terminate_process_tree,
 };
 use serde::{Deserialize, Serialize};
 use tokio::fs::OpenOptions;
+use tokio::io::AsyncRead;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
 use crate::{load_processes, remove_process, save_processes, upsert_process};
+
+type LogWriterHandle = JoinHandle<std::io::Result<()>>;
+type LogWriterHandles = (LogWriterHandle, LogWriterHandle);
+
+#[derive(Debug, Clone, Copy)]
+enum LogCaptureMode {
+    DirectFile,
+    PipeRotating,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PolicyRestartReason {
@@ -61,6 +72,17 @@ impl std::fmt::Display for PolicyRestartReason {
 }
 
 pub async fn start_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    start_app_with_log_mode(app, LogCaptureMode::DirectFile).await
+}
+
+pub async fn start_app_supervised(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    start_app_with_log_mode(app, LogCaptureMode::PipeRotating).await
+}
+
+async fn start_app_with_log_mode(
+    app: &ResolvedAppSpec,
+    log_mode: LogCaptureMode,
+) -> PromonResult<ManagedProcess> {
     if let Some(existing) = load_processes()
         .await?
         .into_iter()
@@ -73,37 +95,34 @@ pub async fn start_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
     let log_paths = ensure_log_paths(app, logs_dir())
         .await
         .map_err(PromonError::Io)?;
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_paths.out)
-        .await
-        .map_err(PromonError::Io)?
-        .into_std()
-        .await;
-    let stderr = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_paths.err)
-        .await
-        .map_err(PromonError::Io)?
-        .into_std()
-        .await;
+    let direct_logs = match log_mode {
+        LogCaptureMode::DirectFile => Some(open_direct_log_stdio(&log_paths).await?),
+        LogCaptureMode::PipeRotating => None,
+    };
 
     let mut child = Command::new(&command.program);
     child
         .args(&command.args)
         .current_dir(&command.cwd)
         .envs(&command.env)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+        .stdin(Stdio::null());
+    match direct_logs {
+        Some((stdout, stderr)) => {
+            child.stdout(stdout).stderr(stderr);
+        }
+        None => {
+            child.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+    }
     configure_process_group(&mut child);
 
-    let child = child.spawn().map_err(PromonError::Io)?;
+    let mut child = child.spawn().map_err(PromonError::Io)?;
     let pid = child
         .id()
         .ok_or_else(|| PromonError::Process(format!("failed to read pid for {}", app.name)))?;
+    if matches!(log_mode, LogCaptureMode::PipeRotating) {
+        start_background_log_writers(app, &mut child, &log_paths)?;
+    }
 
     let process = ManagedProcess {
         name: app.name.clone(),
@@ -187,22 +206,6 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
         let log_paths = ensure_log_paths(app, logs_dir())
             .await
             .map_err(PromonError::Io)?;
-        let stdout = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_paths.out)
-            .await
-            .map_err(PromonError::Io)?
-            .into_std()
-            .await;
-        let stderr = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_paths.err)
-            .await
-            .map_err(PromonError::Io)?
-            .into_std()
-            .await;
 
         let mut command_builder = Command::new(&command.program);
         command_builder
@@ -210,13 +213,14 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
             .current_dir(&command.cwd)
             .envs(&command.env)
             .stdin(Stdio::null())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         configure_process_group(&mut command_builder);
         let mut child = command_builder.spawn().map_err(PromonError::Io)?;
         let pid = child
             .id()
             .ok_or_else(|| PromonError::Process(format!("failed to read pid for {}", app.name)))?;
+        let (stdout_log, stderr_log) = foreground_log_writers(app, &mut child, &log_paths)?;
         let started = std::time::Instant::now();
         let memory_limit = app
             .max_memory_restart
@@ -262,6 +266,8 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
 
             sleep(Duration::from_millis(500)).await;
         };
+        wait_log_writer(stdout_log).await?;
+        wait_log_writer(stderr_log).await?;
 
         if status.success() || !app.restart.autorestart {
             return Ok(());
@@ -279,6 +285,82 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
 
         let delay = app.restart.restart_delay_ms.unwrap_or(1000);
         sleep(Duration::from_millis(delay)).await;
+    }
+}
+
+fn start_background_log_writers(
+    app: &ResolvedAppSpec,
+    child: &mut tokio::process::Child,
+    log_paths: &promon_logging::LogPaths,
+) -> PromonResult<()> {
+    let stdout = child.stdout.take().ok_or_else(|| {
+        PromonError::Process(format!("failed to capture stdout for {}", app.name))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        PromonError::Process(format!("failed to capture stderr for {}", app.name))
+    })?;
+    spawn_log_writer(app, stdout, log_paths.out.clone());
+    spawn_log_writer(app, stderr, log_paths.err.clone());
+    Ok(())
+}
+
+fn foreground_log_writers(
+    app: &ResolvedAppSpec,
+    child: &mut tokio::process::Child,
+    log_paths: &promon_logging::LogPaths,
+) -> PromonResult<LogWriterHandles> {
+    let stdout = child.stdout.take().ok_or_else(|| {
+        PromonError::Process(format!("failed to capture stdout for {}", app.name))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        PromonError::Process(format!("failed to capture stderr for {}", app.name))
+    })?;
+    Ok((
+        spawn_log_writer(app, stdout, log_paths.out.clone()),
+        spawn_log_writer(app, stderr, log_paths.err.clone()),
+    ))
+}
+
+fn spawn_log_writer<R>(
+    app: &ResolvedAppSpec,
+    reader: R,
+    path: std::path::PathBuf,
+) -> LogWriterHandle
+where
+    R: AsyncRead + Send + Unpin + 'static,
+{
+    spawn_rotating_log_writer(reader, path, app.log.max_size_bytes, app.log.retain)
+}
+
+async fn open_direct_log_stdio(
+    log_paths: &promon_logging::LogPaths,
+) -> PromonResult<(Stdio, Stdio)> {
+    let stdout = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_paths.out)
+        .await
+        .map_err(PromonError::Io)?
+        .into_std()
+        .await;
+    let stderr = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_paths.err)
+        .await
+        .map_err(PromonError::Io)?
+        .into_std()
+        .await;
+    Ok((Stdio::from(stdout), Stdio::from(stderr)))
+}
+
+async fn wait_log_writer(handle: LogWriterHandle) -> PromonResult<()> {
+    match handle.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(PromonError::Io(error)),
+        Err(error) => Err(PromonError::Process(format!(
+            "log writer task failed: {error}"
+        ))),
     }
 }
 
@@ -556,17 +638,44 @@ pub async fn restart_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> 
     start_app(app).await
 }
 
+pub async fn restart_app_supervised(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    let _ = stop_app(&app.name).await?;
+    start_app_supervised(app).await
+}
+
 pub async fn reload_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    reload_app_with_log_mode(app, LogCaptureMode::DirectFile).await
+}
+
+pub async fn reload_app_supervised(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    reload_app_with_log_mode(app, LogCaptureMode::PipeRotating).await
+}
+
+async fn reload_app_with_log_mode(
+    app: &ResolvedAppSpec,
+    log_mode: LogCaptureMode,
+) -> PromonResult<ManagedProcess> {
     if cluster_control(app, ClusterControlRequest::Reload)
         .await?
         .is_some()
     {
         return managed_process_for_app(app).await;
     }
-    restart_app(app).await
+    restart_app_with_log_mode(app, log_mode).await
 }
 
 pub async fn scale_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    scale_app_with_log_mode(app, LogCaptureMode::DirectFile).await
+}
+
+pub async fn scale_app_supervised(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    scale_app_with_log_mode(app, LogCaptureMode::PipeRotating).await
+}
+
+async fn scale_app_with_log_mode(
+    app: &ResolvedAppSpec,
+    log_mode: LogCaptureMode,
+) -> PromonResult<ManagedProcess> {
     let instances = resolve_instances(&app.instances);
     if cluster_control(app, ClusterControlRequest::Scale { instances })
         .await?
@@ -574,7 +683,15 @@ pub async fn scale_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
     {
         return managed_process_for_app(app).await;
     }
-    restart_app(app).await
+    restart_app_with_log_mode(app, log_mode).await
+}
+
+async fn restart_app_with_log_mode(
+    app: &ResolvedAppSpec,
+    log_mode: LogCaptureMode,
+) -> PromonResult<ManagedProcess> {
+    let _ = stop_app(&app.name).await?;
+    start_app_with_log_mode(app, log_mode).await
 }
 
 async fn managed_process_for_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {

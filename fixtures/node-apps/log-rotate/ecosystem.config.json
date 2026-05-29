@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "name": "log-rotate-fixture",
+      "script": "server.js",
+      "cwd": ".",
+      "log": {
+        "max_size_bytes": 200,
+        "retain": 2
+      }
+    }
+  ]
+}

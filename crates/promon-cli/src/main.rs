@@ -9,8 +9,9 @@ use promon_logging::tail_file;
 use promon_node_support::validate_runtime;
 use promon_platform::{find_program, promon_home};
 use promon_process::{
-    list_apps, load_desired_apps, policy_restart_reason, reload_app, restart_app,
-    run_app_foreground, save_desired_apps, scale_app, start_app, stop_all, stop_app,
+    list_apps, load_desired_apps, policy_restart_reason, reload_app, reload_app_supervised,
+    restart_app, restart_app_supervised, run_app_foreground, save_desired_apps, scale_app,
+    scale_app_supervised, start_app, start_app_supervised, stop_all, stop_app,
     validate_restart_policy,
 };
 use serde::{Deserialize, Serialize};
@@ -731,7 +732,7 @@ async fn daemon_run(config: PathBuf) -> Result<()> {
     merge_app_specs(&mut apps, config_apps);
     for app in &apps {
         validate_app(app)?;
-        start_app(app).await?;
+        start_app_supervised(app).await?;
     }
     save_desired_apps(&apps).await?;
     let desired = Arc::new(Mutex::new(apps));
@@ -758,7 +759,7 @@ async fn daemon_run(config: PathBuf) -> Result<()> {
                             match policy_restart_reason(app, process) {
                                 Ok(Some(reason)) => {
                                     eprintln!("restarting {}: {reason}", app.name);
-                                    if let Err(error) = restart_app(app).await {
+                                    if let Err(error) = restart_app_supervised(app).await {
                                         eprintln!("failed to restart {}: {error}", app.name);
                                     }
                                 }
@@ -769,7 +770,7 @@ async fn daemon_run(config: PathBuf) -> Result<()> {
                             }
                         }
                         _ if app.restart.autorestart => {
-                            if let Err(error) = start_app(app).await {
+                            if let Err(error) = start_app_supervised(app).await {
                                 eprintln!("failed to start {} during daemon reconciliation: {error}", app.name);
                             }
                         }
@@ -1042,7 +1043,7 @@ async fn start_desired_apps(
         if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
-        match start_app(app).await {
+        match start_app_supervised(app).await {
             Ok(process) => started.push(process),
             Err(error) => return error_response(request_id, error.to_string()),
         }
@@ -1063,7 +1064,7 @@ async fn restart_desired_apps(
         if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
-        match restart_app(app).await {
+        match restart_app_supervised(app).await {
             Ok(process) => restarted.push(process),
             Err(error) => return error_response(request_id, error.to_string()),
         }
@@ -1084,7 +1085,7 @@ async fn reload_desired_apps(
         if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
-        match reload_app(app).await {
+        match reload_app_supervised(app).await {
             Ok(process) => reloaded.push(process),
             Err(error) => return error_response(request_id, error.to_string()),
         }
@@ -1105,7 +1106,7 @@ async fn scale_desired_apps(
         if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
-        match scale_app(app).await {
+        match scale_app_supervised(app).await {
             Ok(process) => scaled.push(process),
             Err(error) => return error_response(request_id, error.to_string()),
         }
@@ -1451,7 +1452,7 @@ async fn watch(target: Option<PathBuf>, interval_ms: u64, json: bool) -> Result<
     };
     for app in &apps {
         validate_app(app)?;
-        start_app(app).await?;
+        start_app_supervised(app).await?;
     }
     if json {
         print_json(serde_json::json!({ "watching": apps }))?;
@@ -1489,14 +1490,14 @@ async fn watch(target: Option<PathBuf>, interval_ms: u64, json: bool) -> Result<
                 watched.snapshot = pending_snapshot.clone();
                 watched.pending = None;
                 if watched.app.watch.reload {
-                    let reloaded = reload_app(&watched.app).await?;
+                    let reloaded = reload_app_supervised(&watched.app).await?;
                     if json {
                         print_json(serde_json::json!({ "reloaded": reloaded }))?;
                     } else {
                         println!("Reloaded {} after file change", watched.app.name);
                     }
                 } else {
-                    let restarted = restart_app(&watched.app).await?;
+                    let restarted = restart_app_supervised(&watched.app).await?;
                     if json {
                         print_json(serde_json::json!({ "restarted": restarted }))?;
                     } else {

@@ -15,6 +15,7 @@ PROMON_BIN="${PROMON_BIN:-target/debug/promon}"
 "$PROMON_BIN" validate fixtures/node-apps/crash/ecosystem.config.json
 "$PROMON_BIN" validate fixtures/node-apps/scheduled/ecosystem.config.json
 "$PROMON_BIN" validate fixtures/node-apps/watcher/ecosystem.config.json
+"$PROMON_BIN" validate fixtures/node-apps/log-rotate/ecosystem.config.json
 "$PROMON_BIN" service status
 
 tmp_home="$(mktemp -d /tmp/promon-smoke.XXXXXX)"
@@ -100,6 +101,15 @@ sleep 1
 daemon_cluster_after_reload="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
 node -e 'const before = JSON.parse(process.argv[1]).payload.processes.find((p) => p.name === "cluster-js"); const after = JSON.parse(process.argv[2]).payload.processes.find((p) => p.name === "cluster-js"); if (!before || !after || before.pid !== after.pid) process.exit(1);' "$daemon_cluster_after_scale" "$daemon_cluster_after_reload"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop cluster-js
+PROMON_HOME="$tmp_home" "$PROMON_BIN" start fixtures/node-apps/log-rotate/ecosystem.config.json
+for _ in $(seq 1 30); do
+  if [ -f "$tmp_home/logs/log-rotate-fixture/out.log.1" ]; then
+    break
+  fi
+  sleep 0.2
+done
+test -f "$tmp_home/logs/log-rotate-fixture/out.log.1"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" stop log-rotate-fixture
 PROMON_HOME="$tmp_home" "$PROMON_BIN" restart examples/basic/ecosystem.config.json
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json
