@@ -293,10 +293,7 @@ fn validate_app(app: &ResolvedAppSpec) -> Result<()> {
 
 async fn validate(config: Option<PathBuf>, json: bool) -> Result<()> {
     let config = resolve_config(config)?;
-    let apps = load_config(&config).await?;
-    for app in &apps {
-        validate_app(app)?;
-    }
+    let apps = load_and_validate_config(&config).await?;
 
     if json {
         print_json(serde_json::json!({ "config": config, "apps": apps }))?;
@@ -307,6 +304,14 @@ async fn validate(config: Option<PathBuf>, json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn load_and_validate_config(config: &std::path::Path) -> Result<Vec<ResolvedAppSpec>> {
+    let apps = load_config(config).await?;
+    for app in &apps {
+        validate_app(app)?;
+    }
+    Ok(apps)
 }
 
 async fn doctor(config: Option<PathBuf>, json: bool) -> Result<()> {
@@ -1035,6 +1040,7 @@ async fn daemon(command: DaemonCommand, json: bool) -> Result<()> {
 
 async fn daemon_start(config: Option<PathBuf>, json: bool) -> Result<()> {
     let config = resolve_config(config)?;
+    let apps = load_and_validate_config(&config).await?;
     if let Ok(response) = send_ipc(IpcRequest::Ping).await {
         if response.ok {
             let pid = daemon_pid().await;
@@ -1070,7 +1076,7 @@ async fn daemon_start(config: Option<PathBuf>, json: bool) -> Result<()> {
     tokio::fs::write(dir.join("daemon.pid"), pid.to_string()).await?;
     wait_for_daemon_ready().await?;
     if json {
-        print_json(serde_json::json!({ "pid": pid, "config": config }))?;
+        print_json(serde_json::json!({ "pid": pid, "config": config, "apps": apps }))?;
     } else {
         println!("Started promon daemon pid={pid}");
     }
@@ -2144,6 +2150,7 @@ async fn shutdown_signal() {
 
 async fn service_install(config: Option<PathBuf>, json: bool) -> Result<()> {
     let config = std::fs::canonicalize(resolve_config(config)?)?;
+    let apps = load_and_validate_config(&config).await?;
     let exe = std::env::current_exe()?;
     let path = service_file_path()?;
     if let Some(parent) = path.parent() {
@@ -2153,7 +2160,7 @@ async fn service_install(config: Option<PathBuf>, json: bool) -> Result<()> {
     let content = service_file_content(&exe, &config)?;
     tokio::fs::write(&path, content).await?;
     if json {
-        print_json(serde_json::json!({ "installed": path, "config": config }))?;
+        print_json(serde_json::json!({ "installed": path, "config": config, "apps": apps }))?;
     } else {
         println!("Installed service definition at {}", path.display());
         println!("It runs: {} daemon run {}", exe.display(), config.display());
