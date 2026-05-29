@@ -16,6 +16,7 @@ use tokio::io::AsyncRead;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::process::Command;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
@@ -213,8 +214,27 @@ fn policy_restart_reason_at(
 }
 
 pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
+    run_app_foreground_inner(app, None).await
+}
+
+pub async fn run_app_foreground_until_shutdown(
+    app: &ResolvedAppSpec,
+    shutdown: watch::Receiver<bool>,
+) -> PromonResult<()> {
+    run_app_foreground_inner(app, Some(shutdown)).await
+}
+
+async fn run_app_foreground_inner(
+    app: &ResolvedAppSpec,
+    mut shutdown: Option<watch::Receiver<bool>>,
+) -> PromonResult<()> {
     let mut restarts = 0_u32;
     loop {
+        if shutdown_requested(shutdown.as_ref()) {
+            let _ = remove_process(&app.name).await?;
+            return Ok(());
+        }
+
         let command = resolve_runtime_command(app)?;
         let log_paths = ensure_log_paths(app, logs_dir())
             .await
@@ -234,6 +254,17 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
             .id()
             .ok_or_else(|| PromonError::Process(format!("failed to read pid for {}", app.name)))?;
         let (stdout_log, stderr_log) = foreground_log_writers(app, &mut child, &log_paths)?;
+        upsert_process(ManagedProcess {
+            name: app.name.clone(),
+            pid,
+            status: ProcessStatus::Running,
+            cwd: command.cwd.clone(),
+            command: command.clone(),
+            started_at: Utc::now(),
+            out_log: log_paths.out.clone(),
+            err_log: log_paths.err.clone(),
+        })
+        .await?;
         let started = std::time::Instant::now();
         let memory_limit = app
             .max_memory_restart
@@ -249,6 +280,26 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
         let status = loop {
             if let Some(status) = child.try_wait().map_err(PromonError::Io)? {
                 break status;
+            }
+
+            if let Some(shutdown) = shutdown.as_mut() {
+                tokio::select! {
+                    changed = shutdown.changed() => {
+                        if changed.is_ok() && *shutdown.borrow() {
+                            terminate_process_tree(pid).await.map_err(PromonError::Io)?;
+                            sleep(Duration::from_millis(500)).await;
+                            if is_process_alive(pid) {
+                                force_kill_process_tree(pid)
+                                    .await
+                                    .map_err(PromonError::Io)?;
+                            }
+                            break child.wait().await.map_err(PromonError::Io)?;
+                        }
+                    }
+                    _ = sleep(Duration::from_millis(500)) => {}
+                }
+            } else {
+                sleep(Duration::from_millis(500)).await;
             }
 
             if let Some(limit) = memory_limit {
@@ -276,11 +327,14 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
                     break child.wait().await.map_err(PromonError::Io)?;
                 }
             }
-
-            sleep(Duration::from_millis(500)).await;
         };
         wait_log_writer(stdout_log).await?;
         wait_log_writer(stderr_log).await?;
+        remove_process(&app.name).await?;
+
+        if shutdown_requested(shutdown.as_ref()) {
+            return Ok(());
+        }
 
         if status.success() || !app.restart.autorestart {
             return Ok(());
@@ -297,8 +351,23 @@ pub async fn run_app_foreground(app: &ResolvedAppSpec) -> PromonResult<()> {
         }
 
         let delay = app.restart.restart_delay_ms.unwrap_or(1000);
-        sleep(Duration::from_millis(delay)).await;
+        if let Some(shutdown) = shutdown.as_mut() {
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_ok() && *shutdown.borrow() {
+                        return Ok(());
+                    }
+                }
+                _ = sleep(Duration::from_millis(delay)) => {}
+            }
+        } else {
+            sleep(Duration::from_millis(delay)).await;
+        }
     }
+}
+
+fn shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
+    shutdown.map(|receiver| *receiver.borrow()).unwrap_or(false)
 }
 
 fn start_background_log_writers(

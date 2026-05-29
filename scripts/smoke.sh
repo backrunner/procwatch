@@ -17,11 +17,13 @@ PROMON_BIN="${PROMON_BIN:-target/debug/promon}"
 "$PROMON_BIN" validate fixtures/node-apps/scheduled/ecosystem.config.json
 "$PROMON_BIN" validate fixtures/node-apps/watcher/ecosystem.config.json
 "$PROMON_BIN" validate fixtures/node-apps/log-rotate/ecosystem.config.json
+"$PROMON_BIN" validate fixtures/node-apps/foreground-multi/ecosystem.config.json
 "$PROMON_BIN" service status
 
 tmp_home="$(mktemp -d /tmp/promon-smoke.XXXXXX)"
 watch_pid=""
-trap 'if [ -n "${watch_pid:-}" ]; then kill "$watch_pid" >/dev/null 2>&1 || true; fi; PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop >/dev/null 2>&1 || true; PROMON_HOME="$tmp_home" "$PROMON_BIN" stop all >/dev/null 2>&1 || true; rm -rf "$tmp_home"' EXIT
+foreground_wait_pid=""
+trap 'if [ -n "${watch_pid:-}" ]; then kill "$watch_pid" >/dev/null 2>&1 || true; fi; if [ -n "${foreground_wait_pid:-}" ]; then kill "$foreground_wait_pid" >/dev/null 2>&1 || true; fi; PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon stop >/dev/null 2>&1 || true; PROMON_HOME="$tmp_home" "$PROMON_BIN" stop all >/dev/null 2>&1 || true; rm -rf "$tmp_home"' EXIT
 
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json
 sleep 1
@@ -38,6 +40,23 @@ PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/server.js
 sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop server
+PROMON_HOME="$tmp_home" "$PROMON_BIN" start --wait fixtures/node-apps/foreground-multi/ecosystem.config.json >"$tmp_home/foreground-wait.log" 2>&1 &
+foreground_wait_pid=$!
+foreground_ready=""
+for _ in $(seq 1 30); do
+  foreground_list="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+  if node -e 'const r = JSON.parse(process.argv[1]); const ps = r.processes || r.payload?.processes || []; const names = new Set(ps.map((p) => p.name)); process.exit(names.has("foreground-one") && names.has("foreground-two") ? 0 : 1);' "$foreground_list"; then
+    foreground_ready=1
+    break
+  fi
+  sleep 0.2
+done
+test "$foreground_ready" = "1"
+kill -INT "$foreground_wait_pid"
+wait "$foreground_wait_pid"
+foreground_wait_pid=""
+foreground_after="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const r = JSON.parse(process.argv[1]); const ps = r.processes || r.payload?.processes || []; if (ps.length !== 0) process.exit(1);' "$foreground_after"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/cluster/ecosystem.config.json
 sleep 1
 cluster_before="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"

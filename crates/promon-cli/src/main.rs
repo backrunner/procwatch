@@ -17,8 +17,8 @@ use promon_node_support::{resolve_instances, resolve_runtime_command, validate_r
 use promon_platform::{find_program, logs_dir, promon_home, state_dir};
 use promon_process::{
     list_apps, load_desired_apps, policy_restart_reason, reload_app, reload_app_supervised,
-    restart_app, restart_app_supervised, run_app_foreground, save_desired_apps, scale_app,
-    scale_app_supervised, start_app, start_app_supervised, stop_all, stop_app,
+    restart_app, restart_app_supervised, run_app_foreground_until_shutdown, save_desired_apps,
+    scale_app, scale_app_supervised, start_app, start_app_supervised, stop_all, stop_app,
     validate_restart_policy,
 };
 use ratatui::{
@@ -30,7 +30,8 @@ use ratatui::{
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
+use tokio::task::JoinSet;
 
 type DesiredApps = Arc<Mutex<Vec<ResolvedAppSpec>>>;
 const IPC_VERSION: u16 = 1;
@@ -623,6 +624,9 @@ fn service_backend_name() -> &'static str {
 async fn start(target: Option<PathBuf>, wait: bool, json: bool) -> Result<()> {
     let apps = resolve_apps(target).await?;
     if wait {
+        for app in &apps {
+            validate_app(app)?;
+        }
         if json {
             print_json(serde_json::json!({ "supervising": apps }))?;
         } else {
@@ -630,11 +634,7 @@ async fn start(target: Option<PathBuf>, wait: bool, json: bool) -> Result<()> {
                 println!("Supervising {}", app.name);
             }
         }
-        for app in apps {
-            validate_app(&app)?;
-            run_app_foreground(&app).await?;
-        }
-        return Ok(());
+        return supervise_foreground_apps(apps).await;
     }
 
     if let Some(response) = try_daemon_request(IpcRequest::StartApps { apps: apps.clone() }).await?
@@ -654,6 +654,65 @@ async fn start(target: Option<PathBuf>, wait: bool, json: bool) -> Result<()> {
         for process in started {
             println!("Started {} pid={}", process.name, process.pid);
         }
+    }
+    Ok(())
+}
+
+async fn supervise_foreground_apps(apps: Vec<ResolvedAppSpec>) -> Result<()> {
+    let (shutdown_tx, _) = watch::channel(false);
+    let mut tasks = JoinSet::new();
+    for app in apps {
+        let shutdown = shutdown_tx.subscribe();
+        tasks.spawn(async move { run_app_foreground_until_shutdown(&app, shutdown).await });
+    }
+
+    let mut first_error: Option<anyhow::Error> = None;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c(), if !tasks.is_empty() => {
+                let _ = shutdown_tx.send(true);
+                break;
+            }
+            result = tasks.join_next(), if !tasks.is_empty() => {
+                let Some(result) = result else {
+                    break;
+                };
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        first_error = Some(error.into());
+                        let _ = shutdown_tx.send(true);
+                        break;
+                    }
+                    Err(error) => {
+                        first_error = Some(anyhow::anyhow!("foreground supervisor task failed: {error}"));
+                        let _ = shutdown_tx.send(true);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if tasks.is_empty() {
+            break;
+        }
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if first_error.is_none() => first_error = Some(error.into()),
+            Err(error) if first_error.is_none() => {
+                first_error = Some(anyhow::anyhow!(
+                    "foreground supervisor task failed: {error}"
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(error) = first_error {
+        return Err(error);
     }
     Ok(())
 }

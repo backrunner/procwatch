@@ -1,0 +1,22 @@
+{
+  "apps": [
+    {
+      "name": "foreground-one",
+      "script": "server.js",
+      "cwd": ".",
+      "env": {
+        "PORT": "3211",
+        "APP_NAME": "foreground-one"
+      }
+    },
+    {
+      "name": "foreground-two",
+      "script": "server.js",
+      "cwd": ".",
+      "env": {
+        "PORT": "3212",
+        "APP_NAME": "foreground-two"
+      }
+    }
+  ]
+}
