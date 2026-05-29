@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use promon_config::{find_config, load_config};
-use promon_core::{AppSpec, Instances, PromonConfig, ResolvedAppSpec};
+use promon_core::{AppSpec, Instances, ManagedProcess, PromonConfig, ResolvedAppSpec};
 use promon_logging::tail_file;
 use promon_node_support::validate_runtime;
 use promon_platform::{find_program, promon_home};
@@ -48,9 +48,15 @@ enum Commands {
     Restart {
         target: Option<PathBuf>,
     },
+    Reload {
+        target: Option<PathBuf>,
+    },
     Scale {
         target: PathBuf,
         instances: u16,
+    },
+    Status {
+        name: Option<String>,
     },
     Service {
         #[command(subcommand)]
@@ -86,7 +92,9 @@ async fn main() -> Result<()> {
         Commands::Start { target, wait } => start(target, wait, cli.json).await,
         Commands::Stop { name } => stop(name, cli.json).await,
         Commands::Restart { target } => restart(target, cli.json).await,
+        Commands::Reload { target } => reload(target, cli.json).await,
         Commands::Scale { target, instances } => scale(target, instances, cli.json).await,
+        Commands::Status { name } => status(name, cli.json).await,
         Commands::Service { command } => service(command, cli.json).await,
         Commands::Daemon { command } => daemon(command, cli.json).await,
         Commands::Logs {
@@ -145,6 +153,8 @@ enum IpcRequest {
     StartApps { apps: Vec<ResolvedAppSpec> },
     Restart { config: PathBuf },
     RestartApps { apps: Vec<ResolvedAppSpec> },
+    Reload { config: PathBuf },
+    ReloadApps { apps: Vec<ResolvedAppSpec> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -324,6 +334,30 @@ async fn restart(target: Option<PathBuf>, json: bool) -> Result<()> {
     Ok(())
 }
 
+async fn reload(target: Option<PathBuf>, json: bool) -> Result<()> {
+    let apps = resolve_apps(target).await?;
+    if let Some(response) =
+        try_daemon_request(IpcRequest::ReloadApps { apps: apps.clone() }).await?
+    {
+        return print_ipc_response(response, json);
+    }
+
+    let mut reloaded = Vec::new();
+    for app in apps {
+        validate_app(&app)?;
+        reloaded.push(restart_app(&app).await?);
+    }
+
+    if json {
+        print_json(serde_json::json!({ "reloaded": reloaded }))?;
+    } else {
+        for process in reloaded {
+            println!("Reloaded {} pid={}", process.name, process.pid);
+        }
+    }
+    Ok(())
+}
+
 async fn scale(target: PathBuf, instances: u16, json: bool) -> Result<()> {
     let mut apps = resolve_apps(Some(target)).await?;
     for app in &mut apps {
@@ -352,6 +386,36 @@ async fn scale(target: PathBuf, instances: u16, json: bool) -> Result<()> {
                 instances.max(1),
                 process.pid
             );
+        }
+    }
+    Ok(())
+}
+
+async fn status(name: Option<String>, json: bool) -> Result<()> {
+    let processes = current_processes().await?;
+    let selected: Vec<_> = processes
+        .into_iter()
+        .filter(|process| {
+            name.as_ref()
+                .map(|name| name == &process.name)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    if json {
+        print_json(serde_json::json!({ "processes": selected, "count": selected.len() }))?;
+    } else if selected.is_empty() {
+        if let Some(name) = name {
+            println!("No managed process named {name}");
+        } else {
+            println!("No managed processes");
+        }
+    } else {
+        for (index, process) in selected.iter().enumerate() {
+            if index > 0 {
+                println!();
+            }
+            print_process_status(process);
         }
     }
     Ok(())
@@ -463,6 +527,37 @@ async fn list(json: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn current_processes() -> Result<Vec<ManagedProcess>> {
+    if let Some(response) = try_daemon_request(IpcRequest::List).await? {
+        if !response.ok {
+            anyhow::bail!(response
+                .error
+                .unwrap_or_else(|| "daemon list request failed".to_string()));
+        }
+        return processes_from_payload(response.payload);
+    }
+    list_apps().await.map_err(Into::into)
+}
+
+fn processes_from_payload(payload: serde_json::Value) -> Result<Vec<ManagedProcess>> {
+    let processes = payload
+        .get("processes")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    serde_json::from_value(processes).map_err(Into::into)
+}
+
+fn print_process_status(process: &ManagedProcess) {
+    println!("Name: {}", process.name);
+    println!("PID: {}", process.pid);
+    println!("Status: {}", format!("{:?}", process.status).to_lowercase());
+    println!("CWD: {}", process.cwd.display());
+    println!("Started: {}", process.started_at);
+    println!("Command: {}", process.command.display_command());
+    println!("Stdout: {}", process.out_log.display());
+    println!("Stderr: {}", process.err_log.display());
 }
 
 async fn service(command: ServiceCommand, json: bool) -> Result<()> {
@@ -905,6 +1000,13 @@ async fn handle_ipc(stream: IpcStream, desired: DesiredApps) -> Result<()> {
             IpcRequest::RestartApps { apps } => {
                 restart_desired_apps(request_id, apps, desired.clone()).await
             }
+            IpcRequest::Reload { config } => match load_config(&config).await {
+                Ok(loaded) => reload_desired_apps(request_id, loaded, desired.clone()).await,
+                Err(error) => error_response(request_id, error.to_string()),
+            },
+            IpcRequest::ReloadApps { apps } => {
+                reload_desired_apps(request_id, apps, desired.clone()).await
+            }
         }
     };
 
@@ -953,6 +1055,27 @@ async fn restart_desired_apps(
     }
     match merge_desired_apps(desired, apps).await {
         Ok(()) => ok_response(request_id, serde_json::json!({ "restarted": restarted })),
+        Err(error) => error_response(request_id, error.to_string()),
+    }
+}
+
+async fn reload_desired_apps(
+    request_id: String,
+    apps: Vec<ResolvedAppSpec>,
+    desired: DesiredApps,
+) -> IpcResponse {
+    let mut reloaded = Vec::new();
+    for app in &apps {
+        if let Err(error) = validate_app(app) {
+            return error_response(request_id, error.to_string());
+        }
+        match restart_app(app).await {
+            Ok(process) => reloaded.push(process),
+            Err(error) => return error_response(request_id, error.to_string()),
+        }
+    }
+    match merge_desired_apps(desired, apps).await {
+        Ok(()) => ok_response(request_id, serde_json::json!({ "reloaded": reloaded })),
         Err(error) => error_response(request_id, error.to_string()),
     }
 }

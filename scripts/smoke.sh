@@ -22,7 +22,12 @@ trap 'PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js >/dev/null 2>&1 || tru
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json
 sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" list
+PROMON_HOME="$tmp_home" "$PROMON_BIN" status basic-js
+status_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json status basic-js)"
+node -e 'const r = JSON.parse(process.argv[1]); if (r.count !== 1 || r.processes[0].name !== "basic-js") process.exit(1);' "$status_json"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" logs basic-js -n 5
+PROMON_HOME="$tmp_home" "$PROMON_BIN" reload examples/basic/ecosystem.config.json
+sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" restart examples/basic/ecosystem.config.json
 sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
@@ -45,6 +50,10 @@ ping_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json daemon ping)"
 node -e 'const r = JSON.parse(process.argv[1]); if (r.version !== 1 || !r.request_id || !r.ok || r.payload.pong !== true) process.exit(1);' "$ping_json"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" daemon list
 PROMON_HOME="$tmp_home" "$PROMON_BIN" list
+PROMON_HOME="$tmp_home" "$PROMON_BIN" status basic-js
+daemon_status_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json status basic-js)"
+node -e 'const r = JSON.parse(process.argv[1]); if (r.count !== 1 || r.processes[0].name !== "basic-js") process.exit(1);' "$daemon_status_json"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" reload examples/basic/ecosystem.config.json
 PROMON_HOME="$tmp_home" "$PROMON_BIN" restart examples/basic/ecosystem.config.json
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json
