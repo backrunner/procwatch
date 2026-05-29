@@ -7,6 +7,7 @@ PROMON_BIN="${PROMON_BIN:-target/debug/promon}"
 "$PROMON_BIN" --version
 "$PROMON_BIN" tui --help
 "$PROMON_BIN" doctor
+"$PROMON_BIN" prune
 "$PROMON_BIN" validate examples/basic/ecosystem.config.json
 "$PROMON_BIN" validate examples/typescript/ecosystem.config.ts
 "$PROMON_BIN" validate examples/package-script/ecosystem.config.js
@@ -40,6 +41,18 @@ PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/server.js
 sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop server
+PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/server.js
+sleep 1
+server_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+server_pid="$(node -e 'const r = JSON.parse(process.argv[1]); const p = r.processes.find((item) => item.name === "server"); if (!p) process.exit(1); console.log(p.pid);' "$server_json")"
+kill -9 "$server_pid" >/dev/null 2>&1 || true
+sleep 1
+stale_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const r = JSON.parse(process.argv[1]); const p = r.processes.find((item) => item.name === "server"); if (!p || p.status !== "unknown") process.exit(1);' "$stale_json"
+prune_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json prune)"
+node -e 'const r = JSON.parse(process.argv[1]); if (r.count !== 1 || r.removed[0].name !== "server") process.exit(1);' "$prune_json"
+empty_after_prune="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const r = JSON.parse(process.argv[1]); if (r.processes.length !== 0) process.exit(1);' "$empty_after_prune"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start --wait fixtures/node-apps/foreground-multi/ecosystem.config.json >"$tmp_home/foreground-wait.log" 2>&1 &
 foreground_wait_pid=$!
 foreground_ready=""

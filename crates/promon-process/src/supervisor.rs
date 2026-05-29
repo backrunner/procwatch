@@ -912,6 +912,22 @@ pub async fn list_apps() -> PromonResult<Vec<ManagedProcess>> {
     Ok(processes)
 }
 
+pub async fn prune_stale_processes() -> PromonResult<Vec<ManagedProcess>> {
+    let mut active = Vec::new();
+    let mut stale = Vec::new();
+    for mut process in load_processes().await? {
+        if is_managed_process_alive(&process) {
+            process.status = ProcessStatus::Running;
+            active.push(process);
+        } else {
+            process.status = ProcessStatus::Unknown;
+            stale.push(process);
+        }
+    }
+    save_processes(&active).await?;
+    Ok(stale)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

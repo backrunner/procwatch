@@ -16,10 +16,10 @@ use promon_logging::tail_file;
 use promon_node_support::{resolve_instances, resolve_runtime_command, validate_runtime};
 use promon_platform::{find_program, logs_dir, promon_home, state_dir};
 use promon_process::{
-    list_apps, load_desired_apps, policy_restart_reason, reload_app, reload_app_supervised,
-    restart_app, restart_app_supervised, run_app_foreground_until_shutdown, save_desired_apps,
-    scale_app, scale_app_supervised, start_app, start_app_supervised, stop_all, stop_app,
-    validate_restart_policy,
+    list_apps, load_desired_apps, policy_restart_reason, prune_stale_processes, reload_app,
+    reload_app_supervised, restart_app, restart_app_supervised, run_app_foreground_until_shutdown,
+    save_desired_apps, scale_app, scale_app_supervised, start_app, start_app_supervised, stop_all,
+    stop_app, validate_restart_policy,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -88,6 +88,7 @@ enum Commands {
     Status {
         name: Option<String>,
     },
+    Prune,
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
@@ -127,6 +128,7 @@ async fn main() -> Result<()> {
         Commands::Reload { target } => reload(target, cli.json).await,
         Commands::Scale { target, instances } => scale(target, instances, cli.json).await,
         Commands::Status { name } => status(name, cli.json).await,
+        Commands::Prune => prune(cli.json).await,
         Commands::Service { command } => service(command, cli.json).await,
         Commands::Daemon { command } => daemon(command, cli.json).await,
         Commands::Logs {
@@ -188,6 +190,7 @@ enum IpcRequest {
     Reload { config: PathBuf },
     ReloadApps { apps: Vec<ResolvedAppSpec> },
     ScaleApps { apps: Vec<ResolvedAppSpec> },
+    Prune,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -853,6 +856,24 @@ async fn status(name: Option<String>, json: bool) -> Result<()> {
                 println!();
             }
             print_process_status(process);
+        }
+    }
+    Ok(())
+}
+
+async fn prune(json: bool) -> Result<()> {
+    if let Some(response) = try_daemon_request(IpcRequest::Prune).await? {
+        return print_ipc_response(response, json);
+    }
+
+    let removed = prune_stale_processes().await?;
+    if json {
+        print_json(serde_json::json!({ "removed": removed, "count": removed.len() }))?;
+    } else if removed.is_empty() {
+        println!("No stale managed processes");
+    } else {
+        for process in removed {
+            println!("Pruned {} pid={}", process.name, process.pid);
         }
     }
     Ok(())
@@ -1891,6 +1912,13 @@ async fn handle_ipc(stream: IpcStream, desired: DesiredApps) -> Result<()> {
                 Ok(processes) => {
                     ok_response(request_id, serde_json::json!({ "processes": processes }))
                 }
+                Err(error) => error_response(request_id, error.to_string()),
+            },
+            IpcRequest::Prune => match prune_stale_processes().await {
+                Ok(processes) => ok_response(
+                    request_id,
+                    serde_json::json!({ "removed": processes, "count": processes.len() }),
+                ),
                 Err(error) => error_response(request_id, error.to_string()),
             },
             IpcRequest::Shutdown => match stop_all().await {
