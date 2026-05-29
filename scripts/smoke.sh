@@ -36,8 +36,15 @@ sleep 1
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop server
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/cluster/ecosystem.config.json
 sleep 1
+cluster_before="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" scale examples/cluster/ecosystem.config.json 1
 sleep 1
+cluster_after_scale="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const before = JSON.parse(process.argv[1]).processes.find((p) => p.name === "cluster-js"); const after = JSON.parse(process.argv[2]).processes.find((p) => p.name === "cluster-js"); if (!before || !after || before.pid !== after.pid) process.exit(1);' "$cluster_before" "$cluster_after_scale"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" reload examples/cluster/ecosystem.config.json
+sleep 1
+cluster_after_reload="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const before = JSON.parse(process.argv[1]).processes.find((p) => p.name === "cluster-js"); const after = JSON.parse(process.argv[2]).processes.find((p) => p.name === "cluster-js"); if (!before || !after || before.pid !== after.pid) process.exit(1);' "$cluster_after_scale" "$cluster_after_reload"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop cluster-js
 HOME="$tmp_home" "$PROMON_BIN" service install examples/basic/ecosystem.config.json
 HOME="$tmp_home" "$PROMON_BIN" service status
@@ -54,6 +61,18 @@ PROMON_HOME="$tmp_home" "$PROMON_BIN" status basic-js
 daemon_status_json="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json status basic-js)"
 node -e 'const r = JSON.parse(process.argv[1]); if (r.count !== 1 || r.processes[0].name !== "basic-js") process.exit(1);' "$daemon_status_json"
 PROMON_HOME="$tmp_home" "$PROMON_BIN" reload examples/basic/ecosystem.config.json
+PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/cluster/ecosystem.config.json
+sleep 1
+daemon_cluster_before="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" scale examples/cluster/ecosystem.config.json 1
+sleep 1
+daemon_cluster_after_scale="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const before = JSON.parse(process.argv[1]).payload.processes.find((p) => p.name === "cluster-js"); const after = JSON.parse(process.argv[2]).payload.processes.find((p) => p.name === "cluster-js"); if (!before || !after || before.pid !== after.pid) process.exit(1);' "$daemon_cluster_before" "$daemon_cluster_after_scale"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" reload examples/cluster/ecosystem.config.json
+sleep 1
+daemon_cluster_after_reload="$(PROMON_HOME="$tmp_home" "$PROMON_BIN" --json list)"
+node -e 'const before = JSON.parse(process.argv[1]).payload.processes.find((p) => p.name === "cluster-js"); const after = JSON.parse(process.argv[2]).payload.processes.find((p) => p.name === "cluster-js"); if (!before || !after || before.pid !== after.pid) process.exit(1);' "$daemon_cluster_after_scale" "$daemon_cluster_after_reload"
+PROMON_HOME="$tmp_home" "$PROMON_BIN" stop cluster-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" restart examples/basic/ecosystem.config.json
 PROMON_HOME="$tmp_home" "$PROMON_BIN" stop basic-js
 PROMON_HOME="$tmp_home" "$PROMON_BIN" start examples/basic/ecosystem.config.json

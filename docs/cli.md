@@ -22,4 +22,4 @@ Implemented MVP commands:
 
 When the daemon is reachable, normal management commands such as `start`, `stop`, `restart`, `reload`, `scale`, `status`, and `list` route through daemon IPC and update daemon desired state where applicable. If no daemon is reachable, they fall back to direct local process management.
 
-`reload` currently shares the same supervisor restart path as `restart`. Graceful cluster worker reload is planned as a follow-up once the cluster shim exposes a reload control channel.
+For cluster apps, `scale` and `reload` use the cluster shim control channel when the app is already running, so the cluster master process can stay alive while workers are resized or replaced. Non-cluster apps still use the supervisor restart path.

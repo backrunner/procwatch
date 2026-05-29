@@ -2,15 +2,20 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
-use promon_core::{ManagedProcess, ProcessStatus, PromonError, PromonResult, ResolvedAppSpec};
+use promon_core::{
+    ExecMode, ManagedProcess, ProcessStatus, PromonError, PromonResult, ResolvedAppSpec,
+};
 use promon_logging::ensure_log_paths;
-use promon_node_support::resolve_runtime_command;
+use promon_node_support::{cluster_control_path, resolve_instances, resolve_runtime_command};
 use promon_platform::{
     force_kill_process_tree, is_process_alive, logs_dir, process_command, terminate_process_tree,
 };
+use serde::{Deserialize, Serialize};
 use tokio::fs::OpenOptions;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpStream;
 use tokio::process::Command;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 use crate::{load_processes, remove_process, save_processes, upsert_process};
 
@@ -18,6 +23,26 @@ use crate::{load_processes, remove_process, save_processes, upsert_process};
 pub enum PolicyRestartReason {
     MemoryLimit { used_bytes: u64, limit_bytes: u64 },
     Scheduled { rule: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClusterControlRequest {
+    Reload,
+    Scale { instances: usize },
+}
+
+#[derive(Debug, Deserialize)]
+struct ClusterControlAddress {
+    host: String,
+    port: u16,
+    pid: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ClusterControlResponse {
+    ok: bool,
+    error: Option<String>,
 }
 
 impl std::fmt::Display for PolicyRestartReason {
@@ -529,6 +554,138 @@ fn is_managed_process_alive(process: &ManagedProcess) -> bool {
 pub async fn restart_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
     let _ = stop_app(&app.name).await?;
     start_app(app).await
+}
+
+pub async fn reload_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    if cluster_control(app, ClusterControlRequest::Reload)
+        .await?
+        .is_some()
+    {
+        return managed_process_for_app(app).await;
+    }
+    restart_app(app).await
+}
+
+pub async fn scale_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    let instances = resolve_instances(&app.instances);
+    if cluster_control(app, ClusterControlRequest::Scale { instances })
+        .await?
+        .is_some()
+    {
+        return managed_process_for_app(app).await;
+    }
+    restart_app(app).await
+}
+
+async fn managed_process_for_app(app: &ResolvedAppSpec) -> PromonResult<ManagedProcess> {
+    let mut process = load_processes()
+        .await?
+        .into_iter()
+        .find(|process| process.name == app.name)
+        .ok_or_else(|| PromonError::Process(format!("managed process not found: {}", app.name)))?;
+    let command = resolve_runtime_command(app)?;
+    process.cwd = command.cwd.clone();
+    process.command = command;
+    upsert_process(process.clone()).await?;
+    Ok(process)
+}
+
+async fn cluster_control(
+    app: &ResolvedAppSpec,
+    request: ClusterControlRequest,
+) -> PromonResult<Option<ClusterControlResponse>> {
+    if app.exec_mode != ExecMode::Cluster {
+        return Ok(None);
+    }
+
+    let path = cluster_control_path(&app.name);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let raw = tokio::fs::read_to_string(&path)
+        .await
+        .map_err(PromonError::Io)?;
+    let address: ClusterControlAddress = match serde_json::from_str(&raw) {
+        Ok(address) => address,
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(None);
+        }
+    };
+    if !matches!(address.host.as_str(), "127.0.0.1" | "localhost" | "::1") {
+        return Err(PromonError::Process(format!(
+            "cluster control address for {} is not loopback: {}",
+            app.name, address.host
+        )));
+    }
+    if let Some(pid) = address.pid {
+        let matches_managed_process = load_processes()
+            .await?
+            .into_iter()
+            .any(|process| process.name == app.name && process.pid == pid);
+        if !matches_managed_process || !is_process_alive(pid) {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(None);
+        }
+    }
+
+    let stream = match timeout(
+        Duration::from_secs(3),
+        TcpStream::connect((address.host.as_str(), address.port)),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        _ => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(None);
+        }
+    };
+
+    let mut reader = BufReader::new(stream);
+    let request = format!(
+        "{}\n",
+        serde_json::to_string(&request).map_err(PromonError::Json)?
+    );
+    match timeout(
+        Duration::from_secs(3),
+        reader.get_mut().write_all(request.as_bytes()),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => return Err(PromonError::Io(error)),
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(None);
+        }
+    }
+
+    let mut line = String::new();
+    let bytes_read = match timeout(Duration::from_secs(3), reader.read_line(&mut line)).await {
+        Ok(Ok(bytes_read)) => bytes_read,
+        Ok(Err(error)) => return Err(PromonError::Io(error)),
+        Err(_) => {
+            let _ = tokio::fs::remove_file(&path).await;
+            return Ok(None);
+        }
+    };
+    if bytes_read == 0 {
+        return Err(PromonError::Process(format!(
+            "cluster control closed without response for {}",
+            app.name
+        )));
+    }
+    let response: ClusterControlResponse =
+        serde_json::from_str(&line).map_err(PromonError::Json)?;
+    if response.ok {
+        Ok(Some(response))
+    } else {
+        Err(PromonError::Process(response.error.unwrap_or_else(|| {
+            format!("cluster control request failed for {}", app.name)
+        })))
+    }
 }
 
 pub async fn list_apps() -> PromonResult<Vec<ManagedProcess>> {

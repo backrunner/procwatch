@@ -8,8 +8,9 @@ use promon_logging::tail_file;
 use promon_node_support::validate_runtime;
 use promon_platform::{find_program, promon_home};
 use promon_process::{
-    list_apps, load_desired_apps, policy_restart_reason, restart_app, run_app_foreground,
-    save_desired_apps, start_app, stop_all, stop_app, validate_restart_policy,
+    list_apps, load_desired_apps, policy_restart_reason, reload_app, restart_app,
+    run_app_foreground, save_desired_apps, scale_app, start_app, stop_all, stop_app,
+    validate_restart_policy,
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -155,6 +156,7 @@ enum IpcRequest {
     RestartApps { apps: Vec<ResolvedAppSpec> },
     Reload { config: PathBuf },
     ReloadApps { apps: Vec<ResolvedAppSpec> },
+    ScaleApps { apps: Vec<ResolvedAppSpec> },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -345,7 +347,7 @@ async fn reload(target: Option<PathBuf>, json: bool) -> Result<()> {
     let mut reloaded = Vec::new();
     for app in apps {
         validate_app(&app)?;
-        reloaded.push(restart_app(&app).await?);
+        reloaded.push(reload_app(&app).await?);
     }
 
     if json {
@@ -364,8 +366,7 @@ async fn scale(target: PathBuf, instances: u16, json: bool) -> Result<()> {
         app.instances = Instances::Count(instances.max(1));
     }
 
-    if let Some(response) =
-        try_daemon_request(IpcRequest::RestartApps { apps: apps.clone() }).await?
+    if let Some(response) = try_daemon_request(IpcRequest::ScaleApps { apps: apps.clone() }).await?
     {
         return print_ipc_response(response, json);
     }
@@ -373,7 +374,7 @@ async fn scale(target: PathBuf, instances: u16, json: bool) -> Result<()> {
     let mut scaled = Vec::new();
     for app in apps {
         validate_app(&app)?;
-        scaled.push(restart_app(&app).await?);
+        scaled.push(scale_app(&app).await?);
     }
 
     if json {
@@ -1007,6 +1008,9 @@ async fn handle_ipc(stream: IpcStream, desired: DesiredApps) -> Result<()> {
             IpcRequest::ReloadApps { apps } => {
                 reload_desired_apps(request_id, apps, desired.clone()).await
             }
+            IpcRequest::ScaleApps { apps } => {
+                scale_desired_apps(request_id, apps, desired.clone()).await
+            }
         }
     };
 
@@ -1069,13 +1073,34 @@ async fn reload_desired_apps(
         if let Err(error) = validate_app(app) {
             return error_response(request_id, error.to_string());
         }
-        match restart_app(app).await {
+        match reload_app(app).await {
             Ok(process) => reloaded.push(process),
             Err(error) => return error_response(request_id, error.to_string()),
         }
     }
     match merge_desired_apps(desired, apps).await {
         Ok(()) => ok_response(request_id, serde_json::json!({ "reloaded": reloaded })),
+        Err(error) => error_response(request_id, error.to_string()),
+    }
+}
+
+async fn scale_desired_apps(
+    request_id: String,
+    apps: Vec<ResolvedAppSpec>,
+    desired: DesiredApps,
+) -> IpcResponse {
+    let mut scaled = Vec::new();
+    for app in &apps {
+        if let Err(error) = validate_app(app) {
+            return error_response(request_id, error.to_string());
+        }
+        match scale_app(app).await {
+            Ok(process) => scaled.push(process),
+            Err(error) => return error_response(request_id, error.to_string()),
+        }
+    }
+    match merge_desired_apps(desired, apps).await {
+        Ok(()) => ok_response(request_id, serde_json::json!({ "scaled": scaled })),
         Err(error) => error_response(request_id, error.to_string()),
     }
 }

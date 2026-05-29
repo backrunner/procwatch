@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use promon_core::{
     ExecMode, Instances, PromonError, PromonResult, ResolvedAppSpec, RuntimeCommand,
 };
-use promon_platform::find_program;
+use promon_platform::{find_program, promon_home};
 
 use crate::{package_manager_from_package_json, read_package_json};
 
@@ -31,6 +31,7 @@ fn resolve_cluster(app: &ResolvedAppSpec) -> PromonResult<RuntimeCommand> {
     let spec = serde_json::json!({
         "name": app.name,
         "instances": resolve_instances(&app.instances),
+        "controlPath": cluster_control_path(&app.name),
         "worker": worker,
     });
 
@@ -100,7 +101,26 @@ fn cluster_shim_path() -> PromonResult<PathBuf> {
     }
 }
 
-fn resolve_instances(instances: &Instances) -> usize {
+pub fn cluster_control_path(name: &str) -> PathBuf {
+    promon_home()
+        .join("cluster")
+        .join(format!("{}.addr", sanitize_control_name(name)))
+}
+
+fn sanitize_control_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+pub fn resolve_instances(instances: &Instances) -> usize {
     match instances {
         Instances::Count(value) => (*value).max(1) as usize,
         Instances::Max(_) => std::thread::available_parallelism()
